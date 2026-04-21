@@ -1138,6 +1138,8 @@ async def intake_agency_review(project_id: str, body: IntakeReviewBody):
         elif it.get("type") == "creative" and it.get("client_file_id"):
             creatives_key = f"wa_editor:p:{project_id}:creatives"
             creatives = await _read_storage(creatives_key) or []
+            # Dedupe por intake_item_id: si ya hay un creative de este item, reemplazarlo
+            creatives = [c for c in creatives if c.get("intake_item_id") != it.get("id")]
             creatives.append({
                 "id": f"cli_{it['client_file_id']}",
                 "name": it.get("client_file_name") or it.get("label"),

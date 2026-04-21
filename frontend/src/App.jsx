@@ -4501,6 +4501,7 @@ function IntakePanel({ projectId, projectName, vars, flows, creatives }) {
                       <div className="flex items-center gap-1.5 w-full">
                         <input value={rej.comment || ""} onChange={e => setRejectState(s => ({ ...s, [it.id]: { ...s[it.id], comment: e.target.value } }))}
                           placeholder="Motivo (ej: el logo no se ve bien en fondo oscuro)"
+                          data-testid={`intake-reject-reason-${it.id}`}
                           className="flex-1 px-2 py-1 text-[12px] border border-red-200 rounded" />
                         <button onClick={() => reviewItem(it.id, "reject", rej.comment)}
                           data-testid={`intake-reject-confirm-${it.id}`}
@@ -4902,7 +4903,7 @@ function ProjectWorkspace({ project, onBack, me, onUpdateProject }) {
         <div className="max-w-[1600px] mx-auto px-6 py-3">
           <div className="flex items-center justify-between gap-4 mb-3">
             <div className="flex items-center gap-3 min-w-0">
-              <button onClick={onBack} className="text-stone-500 hover:text-stone-900 p-1.5 rounded hover:bg-stone-100"><ArrowLeft size={16} /></button>
+              <button onClick={onBack} data-testid="back-to-dashboard-btn" className="text-stone-500 hover:text-stone-900 p-1.5 rounded hover:bg-stone-100"><ArrowLeft size={16} /></button>
               <img src="/fascinads-logo.png" alt="Fascinads" className="h-5 w-auto select-none shrink-0" draggable="false" />
               <div className="h-6 w-px bg-stone-200" />
               <div className="w-8 h-8 rounded-lg flex items-center justify-center text-lg" style={{ backgroundColor: project.color + "22", border: `2px solid ${project.color}` }}>{project.emoji}</div>

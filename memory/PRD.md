@@ -117,7 +117,26 @@ Editor colaborativo multi-proyecto de secuencias de mensajes de WhatsApp para ag
 - **ConnectionsPanel**: nuevo campo "Webhook deploy (🚀 Lanzar ahora)" (`n8nDeployWebhookUrl`)
 - **createSnapshot** ahora devuelve el ID del snapshot creado (necesario para pasarlo al wizard)
 
-### Iter 8 (21 feb 2026) — Code Review Refactor (3 fases)
+### Iter 9 (21 feb 2026) — Checklist Cliente (Client Intake)
+- **Feature nueva completa** solicitada por el usuario: pestaña + link público `/intake/{token}` donde el cliente rellena variables y sube creativos que la agencia le ha pedido.
+- **Decisiones del usuario**: (1c) mixto auto-sugeridos + toggle manual; (2b) upload real a MongoDB GridFS, límite 10 MB; (3b) pending-review — agencia aprueba/rechaza antes de aplicar al proyecto; (4b) notificación Slack/Discord al completar; (5c) sin recordatorios automáticos.
+- **Backend — 9 endpoints nuevos** (server.py:880-1180):
+  - `POST /api/intake/create` — crea/reemplaza intake (idempotent por project_id)
+  - `GET /api/intake/project/{project_id}` — agencia consulta intake
+  - `PUT /api/intake/project/{project_id}/items` — toggle requested
+  - `GET /api/intake/{token}` — público (filtra solo requested=true, NO expone project_id)
+  - `POST /api/intake/{token}/save` — cliente guarda valor → status pending
+  - `POST /api/intake/{token}/upload` — cliente sube archivo (multipart, GridFS, máx 10 MB)
+  - `GET /api/intake/file/{file_id}` — descarga archivo (streaming)
+  - `POST /api/intake/{token}/complete` — cliente marca completo → dispara webhook Slack/Discord
+  - `POST /api/intake/project/{project_id}/review` — agencia aprueba (aplica al proyecto: variable→upsert en vars, creative→append a creatives con dedupe por intake_item_id) o rechaza (guarda review_comment)
+- **GridFS bucket**: `intake_files` con `motor.motor_asyncio.AsyncIOMotorGridFSBucket`. Ficheros servidos en `/api/intake/file/{oid}`.
+- **Frontend**:
+  - `src/pages/PublicIntakePage.jsx` — nueva página pública (300 líneas) con sub-componentes `IntakeHeader`, `ProgressBar`, `StatusBadge`, `VariableItem` (auto-save 600ms debounce), `CreativeItem` (upload con límite 10 MB). Agrupación por sección, status badges (empty/pending/approved/rejected), motivo de rechazo visible al cliente.
+  - `IntakePanel` inline en App.jsx (~300 líneas, antes de ProjectWorkspace) con auto-detección de variables editables sin valor + recursos mencionados sin creativo adjunto. Stats grid, link público con copiar, sección destacada de "pending review" con botones aprobar/rechazar inline.
+  - Tab `'Checklist cliente'` añadido en TABS array (entre 'Panel cliente' y 'Versiones').
+  - Router `/intake/:token` añadido al App() default export.
+- **Testing Iter 9**: 16/16 nuevos tests en `test_intake.py` + 19/19 regresión (test_iter7 + test_review) = **35/35 PASS**. Frontend ~90% (todos los testids validados, approve/reject UI cubierto por backend).
 - **Fase 1 — Fixes seguros**:
   - `storage-shim.js:72` catch vacío → `console.warn("localStorage delete failed", e)`
   - 20 array-index keys reemplazados por compound keys estables (`btn-${i}-${b}`, `edge-${e.from}-${e.to}-${i}`, `line-${n.id}-${i}`, `chatmsg-${i}-${m.role}`, `chk-${c.type}-${i}-${c.flowKey}-${c.msgKey}`, etc.)
@@ -134,9 +153,10 @@ Editor colaborativo multi-proyecto de secuencias de mensajes de WhatsApp para ag
 - **Testing iter 8**: 19/19 backend PASS + Frontend 100% (useConfirm end-to-end, PublicReviewPage extraída renderiza 73 msgs + PDF descargable, smoke tabs Salud + Prompt IA + Conexiones)
 
 ## Testing
-- Iter 6: **13/13 backend** (8 nuevos launch + 5 regresión) + **~85% frontend** end-to-end ✅
-- Iter 7 (21 feb 2026): **13/13 backend** (7 test-connection + 3 smoke + 2 launch + 1 review) + **~95% frontend** ✅
-- Iter 8 (21 feb 2026): **19/19 backend** (sin regresiones) + **100% frontend** (6/6 flujos testeados) ✅
+- Iter 6: **13/13 backend** + **~85% frontend** ✅
+- Iter 7 (21 feb 2026): **13/13 backend** + **~95% frontend** ✅
+- Iter 8 (21 feb 2026): **19/19 backend** + **100% frontend** ✅
+- Iter 9 (21 feb 2026): **35/35 backend** (16 intake + 13 iter7 + 6 review) + **~90% frontend** ✅
 
 ### Iter 7 (21 feb 2026) — Validación beta interna
 - **useConfirm global** (ConfirmProvider + ConfirmDialog z-[70] + hook `useConfirm()`) montado en `<App>` para reemplazar `window.confirm` (bloqueado en iframe Emergent)
@@ -190,18 +210,19 @@ Editor colaborativo multi-proyecto de secuencias de mensajes de WhatsApp para ag
 - `MonitoringPanel`: LIVE cuando n8n envíe events reales, MOCK mientras tanto (fallback automático).
 
 ## Next Action Items
-- **P1** Continuar refactor arquitectural de App.jsx (4851 líneas aún): extraer `ConnectionsPanel` (~200 líneas), `AutopilotPanel`+`LaunchWizard` (~500), `MessageCard` (~411, complejidad 107 según reporte), `ProjectWorkspace` (~480). Objetivo: <3000 líneas en App.jsx.
-- **P1** Añadir `data-testid="delete-project-${id}"` al botón Trash2 de ProjectsDashboard (App.jsx:1405) — reportado por testing agent, facilitará QA automatizado sin depender del hover.
-- **P1** Añadir botón "Enviar via Meta template" en MessageCard para flujos no-broadcast (usar TemplateMeta.name + /api/whatsapp/send)
-- **P1** Conectar tus workflows n8n reales a `POST /api/events` → Monitor LIVE
-- **P1** Documentar en UI (help text junto a "Probar conexión n8n") que el webhook de prueba lleva header `X-WAFLOW-Test: 1` y el cliente debe filtrarlo en su flow de producción.
-- **P2** Crear flujos desde cero (hoy solo se añaden mensajes a las 6 plantillas)
-- **P2** Historial empty state con copy explicativo cuando 0 snapshots
-- **P2** Multi-tenant auth (Login/Register) — pendiente tras validación beta
-- **P2** Tests unitarios React Testing Library para sub-componentes de PublicReviewPage (ReviewHeader, ReviewerNameCard, etc.) y useConfirm hook
-- **P3** Rate-limiting en /api/review/* y /api/evolution/send
-- **P3** Fix hash `/sign` para que mismo contenido firmado dos veces no dé mismo hash (separar content_hash de signed_at)
-- **P3** Persistencia `waflow_me` entre sesiones (confirmar que el shim guarda en backend y no solo memory)
+- **P1** Extraer `IntakePanel` de App.jsx a `src/panels/IntakePanel.jsx` (~300 líneas dentro de App.jsx = 5150 tras iter-9) siguiendo el patrón de PublicReviewPage.
+- **P1** Continuar refactor App.jsx: `ConnectionsPanel`, `AutopilotPanel+LaunchWizard`, `MessageCard` (411 líneas, complejidad 107), `ProjectWorkspace` (480 líneas). Objetivo: App.jsx <3500 líneas.
+- **P1** Botón "Enviar via Meta template" en MessageCard para flujos no-broadcast (usar TemplateMeta.name + /api/whatsapp/send).
+- **P1** Conectar tus workflows n8n reales a `POST /api/events` → Monitor LIVE.
+- **P1** Documentar en UI junto a "Probar conexión n8n" que el webhook de prueba lleva header `X-WAFLOW-Test:1`.
+- **P2** Cleanup de GridFS: job periódico que elimine ficheros huérfanos (client_file_id previo cuando el cliente re-sube se elimina, pero si luego el cliente nunca más sube y se rechaza, el fichero antiguo se queda). Añadir DELETE endpoint cuando agencia elimina item.
+- **P2** Mejora UX PublicIntakePage: spinner "guardando..." durante fetch (actualmente solo muestra 'Guardado' tras éxito).
+- **P2** Items custom manuales en IntakePanel: añadir variable/creative que no está en el auto-detect (ej. "enlace Calendly") sin tener que crear variable previamente.
+- **P2** Historial empty state · Auth multi-tenant.
+- **P3** Rate-limiting /api/review/* y /api/intake/* y /api/evolution/send.
+- **P3** Fix hash /sign para que mismo contenido firmado dos veces no dé mismo hash.
+- **P3** Logger warning en webhook Slack/Discord fallido (intake_client_complete) para trazabilidad en prod.
+- **P3** Streaming chunked en GridFS upload si algún día subimos el límite >50 MB.
 
 ## Credentials / Keys
 - `EMERGENT_LLM_KEY` en `/app/backend/.env`
