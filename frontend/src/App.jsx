@@ -1871,7 +1871,7 @@ function ConnectionsPanel({ conn, setConn, projectName, notifyConfig, setNotifyC
           <div className="w-6 h-6 rounded bg-[#25D366] flex items-center justify-center text-white text-xs font-bold">M</div>
           <div className="font-semibold text-stone-900">Meta WhatsApp Cloud API</div>
         </div>
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <Field label="Display phone" value={conn.displayPhone} onChange={v => update("displayPhone", v)} placeholder="+34 612 345 678" />
           <Field label="Phone Number ID" value={conn.phoneNumberId} onChange={v => update("phoneNumberId", v)} mono />
           <Field label="WABA ID" value={conn.wabaId} onChange={v => update("wabaId", v)} mono />
@@ -1895,7 +1895,7 @@ function ConnectionsPanel({ conn, setConn, projectName, notifyConfig, setNotifyC
           <div className="w-6 h-6 rounded bg-[#EA4B71] flex items-center justify-center text-white text-xs font-bold">n8n</div>
           <div className="font-semibold">n8n</div>
         </div>
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <Field label="Webhook URL (Meta → n8n)" value={conn.n8nWebhookUrl} onChange={v => update("n8nWebhookUrl", v)} mono full />
           <Field label="n8n API URL" value={conn.n8nApiUrl} onChange={v => update("n8nApiUrl", v)} mono />
           <Field label="n8n API Key" value={conn.n8nApiKey} onChange={v => update("n8nApiKey", v)} mono password />
@@ -1917,16 +1917,16 @@ function ConnectionsPanel({ conn, setConn, projectName, notifyConfig, setNotifyC
           <Field label="Server URL Evolution" value={conn.evolution?.server_url || ""}
             onChange={v => setConn({ ...conn, evolution: { ...(conn.evolution || {}), server_url: v } })}
             placeholder="https://evolution.miserver.com" mono full />
-          <div className="grid grid-cols-2 gap-3">
+          <div className="text-[10.5px] text-stone-500 bg-stone-50 border border-stone-200 rounded p-2 leading-relaxed">
+            💡 Para enviar a una <strong>comunidad/grupo</strong> WhatsApp usa el JID del grupo (formato <code className="font-mono">1203630...@g.us</code>). Para número individual, formato E.164 sin <code className="font-mono">+</code>.
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <Field label="API Key" value={conn.evolution?.api_key || ""}
               onChange={v => setConn({ ...conn, evolution: { ...(conn.evolution || {}), api_key: v } })}
               placeholder="clave-larga" mono />
             <Field label="Instancia" value={conn.evolution?.instance || ""}
               onChange={v => setConn({ ...conn, evolution: { ...(conn.evolution || {}), instance: v } })}
               placeholder="nombre-instancia" mono />
-          </div>
-          <div className="text-[10.5px] text-stone-500 bg-stone-50 border border-stone-200 rounded p-2 leading-relaxed">
-            💡 Para enviar a una <strong>comunidad/grupo</strong> WhatsApp usa el JID del grupo (formato <code className="font-mono">1203630...@g.us</code>). Para número individual, formato E.164 sin <code className="font-mono">+</code>.
           </div>
           <div className="mt-1 flex items-center gap-2">
             <button onClick={() => testConnection("evolution", { server_url: conn.evolution?.server_url, api_key: conn.evolution?.api_key, instance: conn.evolution?.instance }, "evolution")}
