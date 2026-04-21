@@ -328,6 +328,177 @@ async def review_approve(token: str, body: ReviewApprovalBody):
 
 
 # ============================================================
+# NOTIFY — al 80% de aprobaciones el cliente puede disparar webhooks
+# a Slack / Discord configurados por el equipo en ConnectionsPanel.
+# ============================================================
+class NotifyBody(BaseModel):
+    approved: int
+    total: int
+    project_name: Optional[str] = ""
+
+
+@api_router.post("/review/{token}/notify")
+async def review_notify(token: str, body: NotifyBody):
+    rec = await db.review_tokens.find_one({"token": token}, {"_id": 0})
+    if not rec:
+        raise HTTPException(status_code=404, detail="Link no válido")
+    pid = rec["project_id"]
+
+    notify_config = await _read_storage(f"wa_editor:p:{pid}:notify_config") or {}
+    if notify_config.get("notified_80_at"):
+        return {"ok": True, "already_notified": True}
+
+    pct = (body.approved / body.total * 100) if body.total else 0
+    if pct < 80:
+        return {"ok": True, "notified": False, "pct": pct}
+
+    slack_url = notify_config.get("slack_url")
+    discord_url = notify_config.get("discord_url")
+
+    message = (
+        f"🎉 *WAFLOW · {body.project_name or 'Proyecto'}*\n"
+        f"El cliente ha aprobado *{body.approved}/{body.total}* mensajes "
+        f"({pct:.0f}%). ¡Podéis cerrar la revisión!"
+    )
+
+    results = {"slack": None, "discord": None}
+    async with httpx.AsyncClient(timeout=10.0) as hclient:
+        if slack_url:
+            try:
+                r = await hclient.post(slack_url, json={"text": message})
+                results["slack"] = r.status_code
+            except Exception as e:
+                results["slack"] = f"err: {e}"
+        if discord_url:
+            try:
+                r = await hclient.post(discord_url, json={"content": message})
+                results["discord"] = r.status_code
+            except Exception as e:
+                results["discord"] = f"err: {e}"
+
+    notify_config["notified_80_at"] = datetime.now(timezone.utc).isoformat()
+    notify_config["notified_stats"] = {"approved": body.approved, "total": body.total, "pct": pct}
+    await _write_storage(f"wa_editor:p:{pid}:notify_config", notify_config)
+
+    return {"ok": True, "notified": True, "pct": pct, "targets": results}
+
+
+# ============================================================
+# PDF SUMMARY — resumen descargable de la revisión
+# ============================================================
+@api_router.get("/review/{token}/summary.pdf")
+async def review_summary_pdf(token: str):
+    from fastapi.responses import Response
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import cm
+    from reportlab.lib import colors
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+    from io import BytesIO
+
+    rec = await db.review_tokens.find_one({"token": token}, {"_id": 0})
+    if not rec:
+        raise HTTPException(status_code=404, detail="Link no válido")
+    pid = rec["project_id"]
+
+    projects = await _read_storage(PROJECTS_LIST_KEY) or []
+    project = next((p for p in projects if p.get("id") == pid), None)
+    if not project:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+
+    vars_list = await _read_storage(f"wa_editor:p:{pid}:vars") or []
+    edits = await _read_storage(f"wa_editor:p:{pid}:edits") or {}
+    approval = await _read_storage(f"wa_editor:p:{pid}:approval") or {}
+
+    # Construir contenido del PDF
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=2*cm, bottomMargin=2*cm, leftMargin=2*cm, rightMargin=2*cm)
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle("title", parent=styles["Heading1"], textColor=colors.HexColor("#4F46E5"), spaceAfter=6)
+    meta_style = ParagraphStyle("meta", parent=styles["Normal"], textColor=colors.HexColor("#6B7280"), fontSize=9)
+    h2_style = ParagraphStyle("h2", parent=styles["Heading2"], textColor=colors.HexColor("#111827"), spaceBefore=12, spaceAfter=6)
+    msg_id_style = ParagraphStyle("msgid", parent=styles["Normal"], fontName="Courier-Bold", fontSize=9, textColor=colors.HexColor("#111827"))
+    body_style = ParagraphStyle("body", parent=styles["Normal"], fontSize=10, leading=14, textColor=colors.HexColor("#1F2937"))
+    note_style = ParagraphStyle("note", parent=styles["Italic"], fontSize=9, textColor=colors.HexColor("#92400E"), leftIndent=10)
+
+    story = []
+    story.append(Paragraph(f"WAFLOW · Resumen de revisión", title_style))
+    story.append(Paragraph(f"<b>Proyecto:</b> {project.get('name','?')} · <b>Cliente:</b> {project.get('client') or '—'}", meta_style))
+    story.append(Paragraph(f"Generado: {datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M UTC')}", meta_style))
+    story.append(Spacer(1, 0.4*cm))
+
+    total = len(approval)
+    approved = sum(1 for v in approval.values() if (v or {}).get("status") == "approved")
+    changes = sum(1 for v in approval.values() if (v or {}).get("status") == "changes")
+
+    stats_data = [
+        ["Estado", "Cantidad"],
+        ["✓ Aprobados", str(approved)],
+        ["✎ Con cambios", str(changes)],
+        ["Total revisados", str(total)],
+    ]
+    t = Table(stats_data, colWidths=[6*cm, 3*cm])
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#4F46E5")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#F9FAFB")),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#E5E7EB")),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("PADDING", (0, 0), (-1, -1), 6),
+    ]))
+    story.append(t)
+    story.append(Spacer(1, 0.5*cm))
+    story.append(Paragraph("Detalle por mensaje", h2_style))
+
+    def render_vars(text: str) -> str:
+        if not text:
+            return ""
+        out = text
+        for v in vars_list:
+            name = v.get("name")
+            if not name:
+                continue
+            out = out.replace("{" + name + "}", str(v.get("value") or f"{{{name}}}"))
+        return out
+
+    # Mostrar solo mensajes con aprobación registrada (lo revisado)
+    # Ordenados por msgKey
+    for msg_key in sorted(approval.keys()):
+        a = approval[msg_key] or {}
+        status = a.get("status")
+        status_label = "✓ APROBADO" if status == "approved" else ("✎ CAMBIOS" if status == "changes" else "—")
+        color = colors.HexColor("#059669") if status == "approved" else (colors.HexColor("#B45309") if status == "changes" else colors.HexColor("#6B7280"))
+
+        story.append(Paragraph(f"<font name='Courier-Bold' color='#111827'>{msg_key}</font> · <font color='{color.hexval()[2:]}'><b>{status_label}</b></font>", body_style))
+        story.append(Paragraph(f"<font color='#6B7280' size='9'>Revisado por: {a.get('by','—')}</font>", meta_style))
+
+        edited_copy = edits.get(msg_key)
+        if edited_copy:
+            rendered = render_vars(edited_copy).replace("\n", "<br/>")
+            story.append(Spacer(1, 0.1*cm))
+            story.append(Paragraph(rendered, body_style))
+        if a.get("comment"):
+            story.append(Spacer(1, 0.1*cm))
+            story.append(Paragraph(f"<b>Nota del cliente:</b> {a['comment']}", note_style))
+        story.append(Spacer(1, 0.3*cm))
+
+    if total == 0:
+        story.append(Paragraph("Sin mensajes revisados todavía.", meta_style))
+
+    doc.build(story)
+    pdf_bytes = buf.getvalue()
+    buf.close()
+
+    filename = f"WAFLOW_{(project.get('name') or 'review').replace(' ', '_')}_{datetime.now(timezone.utc).strftime('%Y%m%d')}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ============================================================
 # ROOT
 # ============================================================
 @api_router.get("/")

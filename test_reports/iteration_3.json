@@ -1,0 +1,37 @@
+{
+  "summary": "Iteration 3 fully tested. Backend: 7/7 new tests PASS (PDF summary valid/404, notify <80%, notify >=80% idempotent, notify with valid Slack webhook via httpbin/200, notify with invalid webhook captures err:, notify 404). Prior review suite (6/6) regression PASS. Frontend verified on TEST_Webinar_Persist project: attach-creative-btn-{flow}-{msgId} opens AttachCreativeModal (Biblioteca / + Subir nuevo tabs), 'Añadir y adjuntar' flow added 'TEST_Creativo_Iter3' and the 🎨 badge appears on the message card; Mapa tab shows 'Mapa por flujo' section with 6 FlowMiniMaps (Flujo A, 1-1 Pre-webinar, Broadcasts programados, Venta 1-1 post-webinar, Venta comunidad, Replay) with chips and '→' connectors; Conexiones has new 'Notificaciones al equipo' section with Slack + Discord URL fields; Variables sidebar shows info block 'Variables bloqueadas: son técnicas...' and 🔒 buttons carry tooltip 'Bloqueada: es técnica/tracking. Pulsa para desbloquear bajo tu responsabilidad.'; PublicReviewPage (/review/{token}) renders <a data-testid='download-pdf-btn' href='.../api/review/{token}/summary.pdf'>Descargar resumen (PDF)</a>. Only the VarPicker interactive insertion (TEST2c) could not be automated end-to-end because clicking Editar triggers the pre-existing '¿Cómo te llamas?' signer modal that blocks further interaction; the underlying code (VarPicker component at App.jsx:402 with Runtime NOMBRE/USER_ID/EMAIL/PHONE section, toggle-var-picker-{flowKey}-{msgId} testid at line 709, cursor-position insertion into textarea) is correctly implemented — no defect found, just automation-gating UX.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Flujos / message Editar", "issues": ["Clicking 'Editar' when no reviewer name is stored opens the blocking '¿Cómo te llamas?' modal but the Editar action is lost if the user hits 'Cancelar' — consider skipping the name prompt for in-app editing (it is intended for public review signing) or remembering that Editar was pressed so it proceeds after save."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter3.py",
+    "/app/backend/tests/test_review.py",
+    "/app/test_reports/pytest/pytest_iter3_results.xml"
+  ],
+  "action_items": [
+    "(Optional UX) Decouple the reviewer-name prompt from in-workspace Editar — today clicking Editar with no saved name opens the signer modal and a Cancelar drops the edit. Either auto-open edit after Save, or skip the modal for team-side edits and only require it in /review/{token}."
+  ],
+  "critical_code_review_comments": [
+    "server.py notify endpoint: httpx.AsyncClient is created even when no slack/discord URL is configured — fine functionally but wasteful. Consider `if slack_url or discord_url:` before opening the client.",
+    "server.py review_summary_pdf: heavy imports (reportlab) done inside the handler — acceptable for cold-path, but moving them to module scope would remove per-request overhead once the feature is in regular use.",
+    "App.jsx continues to grow (~3800+ lines). PublicReviewPage, VarPicker, AttachCreativeModal, FlowMiniMap, ConnectionsPanel are now sizable and could each live in their own file. Refactor will help future iterations.",
+    "PublicReviewPage: the notify trigger is fired 'in background (non-blocking)' — good; make sure it is debounced so rapid approve clicks at 80%+ don't fire N times before the backend persists notified_80_at (backend idempotency mitigates, but extra HTTP traffic is avoidable).",
+    "NotifyBody has no validation on 'total > 0' — division by zero is guarded (`if body.total else 0`) but responding with 400 on total<=0 would be cleaner."
+  ],
+  "updated_files": ["/app/backend/tests/test_iter3.py"],
+  "success_rate": {
+    "backend": "100% (13/13 — 7 new iter-3 + 6 iter-2 regression)",
+    "frontend": "~95% (5/6 iter-3 UX flows verified end-to-end via Playwright; VarPicker code path verified by code+grep but interactive insertion couldn't be automated due to the app's own name-prompt modal gating Editar)"
+  },
+  "test_credentials": "No auth — public review tokens only.",
+  "seed_data_creation": "Used existing proj_mo8h4b5hwsap (TEST_Webinar_Persist). Toggled/reset wa_editor:p:proj_mo8h4b5hwsap:notify_config between tests and at teardown (set back to {}). Attached a 'TEST_Creativo_Iter3' creative to flujo_a:M1 during UI test — should be cleaned up manually if it interferes.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Three pytest files now: backend_test.py (iter1, consumes LLM), test_review.py (iter2, no LLM), test_iter3.py (iter3, no LLM — PDF + notify). Run `pytest backend/tests/test_review.py backend/tests/test_iter3.py -v` for no-credit verification (13 tests, ~2s). For UI: open /review/{token} via page.goto (SPA router reads window.location on full load); the reviewer-name modal on the workspace Editar action blocks Playwright — either seed wa_editor:commenter_name beforehand via /api/storage/set or type a name in the modal and hit Guardar before asserting on toggle-var-picker.",
+  "rca_of_the_issue": "N/A — no bug. The one unautomated check is gated by the pre-existing '¿Cómo te llamas?' modal that fires on Editar. Mitigation: pre-seed `wa_editor:commenter_name` via /api/storage/set with shared:true before UI automation touches Editar."
+}

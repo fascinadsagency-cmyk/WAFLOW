@@ -313,6 +313,9 @@ function VariablesPanel({ vars, setVars, search, setSearch, onReset }) {
         className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-[11px] font-medium text-stone-600 border border-stone-200 rounded-md hover:border-stone-400 hover:text-stone-900">
         <RotateCcw size={12} /> Restaurar originales
       </button>
+      <div className="text-[10.5px] text-stone-500 bg-stone-50 border border-stone-200 rounded p-2 leading-relaxed">
+        <strong>🔒 Variables bloqueadas:</strong> son técnicas (tracking UTM, IDs de n8n/Evolution, dominios base). Si las cambias sin saber, puedes romper el tracking o los envíos. Pulsa el candado para desbloquear bajo tu responsabilidad.
+      </div>
       {Object.entries(grouped).map(([cat, items]) => (
         <div key={cat}>
           <div className="text-[10px] font-semibold tracking-widest text-stone-500 uppercase mb-2">{cat}</div>
@@ -324,6 +327,7 @@ function VariablesPanel({ vars, setVars, search, setSearch, onReset }) {
                   <div className="flex items-center justify-between mb-1 gap-2">
                     <label className="text-[11px] font-mono text-stone-600 truncate">{`{${v.name}}`}</label>
                     <button
+                      title={v.editable ? "Desbloqueada: la puedes editar" : "Bloqueada: es técnica/tracking. Pulsa para desbloquear bajo tu responsabilidad."}
                       onClick={() => { const n = [...vars]; n[idx] = { ...n[idx], editable: !v.editable }; setVars(n); }}
                       className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded border transition ${
                         v.editable ? "text-emerald-700 bg-emerald-50 border-emerald-200"
@@ -393,6 +397,186 @@ function WhatsAppPreview({ msg, vars, onClose, variant = null }) {
 
 
 // ====================================================================
+// VARIABLES PICKER — insertar variables en el textarea de edición
+// ====================================================================
+function VarPicker({ vars, onInsert }) {
+  const [q, setQ] = useState("");
+  const filtered = useMemo(() => {
+    const s = q.toLowerCase();
+    return vars.filter(v => v.name && (!s ||
+      v.name.toLowerCase().includes(s) ||
+      (v.value || "").toLowerCase().includes(s) ||
+      (v.category || "").toLowerCase().includes(s)
+    ));
+  }, [vars, q]);
+  const grouped = useMemo(() => {
+    const g = {};
+    filtered.forEach(v => { const c = v.category || "Otros"; if (!g[c]) g[c] = []; g[c].push(v); });
+    return g;
+  }, [filtered]);
+  const RUNTIME_LIST = [
+    { name: "NOMBRE", value: "(se rellena automáticamente con el nombre del lead)" },
+    { name: "USER_ID", value: "(se rellena automáticamente por n8n)" },
+    { name: "EMAIL", value: "(se rellena automáticamente si el lead lo da)" },
+    { name: "PHONE", value: "(se rellena automáticamente)" },
+  ];
+
+  return (
+    <div className="mt-2 border border-stone-200 rounded-md bg-white overflow-hidden">
+      <div className="px-3 py-2 border-b border-stone-200 bg-stone-50 flex items-center gap-2">
+        <Search size={12} className="text-stone-400" />
+        <input value={q} onChange={e => setQ(e.target.value)} placeholder="Buscar variable..."
+          className="flex-1 text-[11.5px] bg-transparent focus:outline-none" />
+        <span className="text-[10px] text-stone-500">Click → insertar en cursor</span>
+      </div>
+      <div className="max-h-[220px] overflow-y-auto p-2 space-y-2.5">
+        {/* Runtime vars */}
+        <div>
+          <div className="text-[9.5px] font-semibold tracking-widest text-sky-700 uppercase mb-1">🤖 Runtime (rellena n8n)</div>
+          <div className="flex flex-wrap gap-1">
+            {RUNTIME_LIST.map(v => (
+              <button key={v.name} onClick={() => onInsert(v.name)} title={v.value}
+                className="text-[10.5px] font-mono px-1.5 py-0.5 rounded border bg-sky-50 border-sky-200 text-sky-800 hover:bg-sky-100">
+                {"{" + v.name + "}"}
+              </button>
+            ))}
+          </div>
+        </div>
+        {Object.entries(grouped).map(([cat, items]) => (
+          <div key={cat}>
+            <div className="text-[9.5px] font-semibold tracking-widest text-stone-500 uppercase mb-1">{cat}</div>
+            <div className="space-y-1">
+              {items.map(v => (
+                <button key={v.name} onClick={() => onInsert(v.name)}
+                  className="w-full text-left px-2 py-1 rounded hover:bg-emerald-50 border border-transparent hover:border-emerald-200 transition">
+                  <div className="text-[11px] font-mono text-emerald-800">{"{" + v.name + "}"}</div>
+                  <div className="text-[10px] text-stone-500 truncate" title={v.value}>{v.value || "—"}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
+        {filtered.length === 0 && <div className="text-[11px] text-stone-500 text-center py-3">Sin resultados</div>}
+      </div>
+    </div>
+  );
+}
+
+// ====================================================================
+// ATTACH CREATIVE MODAL — asociar creativo a un mensaje desde la tarjeta
+// ====================================================================
+function AttachCreativeModal({ msgKey, creatives, onAttach, onRemove, onClose }) {
+  const [tab, setTab] = useState("existing"); // existing | new
+  const [draft, setDraft] = useState({ name: "", type: "image", url: "", notes: "" });
+
+  const attached = creatives.filter(c => c.messageKey === msgKey);
+  const available = creatives.filter(c => !c.messageKey);
+
+  const saveNew = () => {
+    if (!draft.name.trim() || !draft.url.trim()) { alert("Nombre y URL son obligatorios"); return; }
+    onAttach({ ...draft, source: "url" });
+    setDraft({ name: "", type: "image", url: "", notes: "" });
+    setTab("existing");
+  };
+
+  const typeIcon = t => t === "image" ? "🖼️" : t === "video" ? "🎬" : t === "gif" ? "✨" : "📄";
+
+  return (
+    <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl overflow-hidden shadow-2xl max-w-lg w-full max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="px-5 py-3 border-b border-stone-200 flex items-center justify-between">
+          <div className="font-bold text-stone-900 text-sm">Creativos del mensaje <span className="font-mono text-xs text-stone-500">{msgKey}</span></div>
+          <button onClick={onClose} className="text-stone-500 hover:text-stone-900"><X size={16} /></button>
+        </div>
+        <div className="border-b border-stone-200 flex">
+          <button onClick={() => setTab("existing")}
+            className={`flex-1 py-2.5 text-xs font-semibold tracking-widest uppercase ${tab === "existing" ? "text-stone-900 border-b-2 border-stone-900" : "text-stone-500"}`}>
+            Biblioteca ({attached.length + available.length})
+          </button>
+          <button onClick={() => setTab("new")}
+            className={`flex-1 py-2.5 text-xs font-semibold tracking-widest uppercase ${tab === "new" ? "text-stone-900 border-b-2 border-stone-900" : "text-stone-500"}`}>
+            + Subir nuevo
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4">
+          {tab === "existing" ? (
+            <div className="space-y-4">
+              <div>
+                <div className="text-[10px] font-semibold tracking-widest text-emerald-700 uppercase mb-2">Adjuntos a este mensaje ({attached.length})</div>
+                {attached.length === 0 ? (
+                  <div className="text-[11.5px] text-stone-500 italic">Ninguno todavía.</div>
+                ) : (
+                  <div className="space-y-1.5">
+                    {attached.map(c => (
+                      <div key={c.id} className="flex items-center gap-2 bg-emerald-50 border border-emerald-200 rounded-md px-2.5 py-1.5">
+                        <div>{typeIcon(c.type)}</div>
+                        <div className="flex-1 min-w-0">
+                          <div className="text-[12px] font-medium text-stone-800 truncate">{c.name}</div>
+                          {c.url && <div className="text-[10px] text-stone-500 truncate font-mono">{c.url}</div>}
+                        </div>
+                        <button onClick={() => onRemove(c.id)} className="text-red-500 hover:text-red-700" title="Desvincular del mensaje">
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div>
+                <div className="text-[10px] font-semibold tracking-widest text-stone-500 uppercase mb-2">Sin asignar en biblioteca ({available.length})</div>
+                {available.length === 0 ? (
+                  <div className="text-[11.5px] text-stone-500 italic">No hay creativos libres. Añade uno en la pestaña + Subir nuevo.</div>
+                ) : (
+                  <div className="space-y-1.5">
+                    {available.map(c => (
+                      <button key={c.id} onClick={() => onAttach(c)}
+                        className="w-full flex items-center gap-2 bg-white border border-stone-200 rounded-md px-2.5 py-1.5 hover:border-stone-400 hover:bg-stone-50 text-left transition">
+                        <div>{typeIcon(c.type)}</div>
+                        <div className="flex-1 min-w-0">
+                          <div className="text-[12px] font-medium text-stone-800 truncate">{c.name}</div>
+                          {c.url && <div className="text-[10px] text-stone-500 truncate font-mono">{c.url}</div>}
+                        </div>
+                        <span className="text-[10px] text-emerald-700 font-medium">Adjuntar →</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <Field label="Nombre" value={draft.name} onChange={v => setDraft({ ...draft, name: v })} placeholder="Ej: Testimonio Laura" />
+              <div>
+                <label className="text-[11px] font-medium text-stone-600">Tipo</label>
+                <div className="flex gap-1.5 mt-1">
+                  {[{k:"image",l:"🖼️ Imagen"},{k:"video",l:"🎬 Video"},{k:"gif",l:"✨ GIF"},{k:"doc",l:"📄 Doc"}].map(t => (
+                    <button key={t.k} onClick={() => setDraft({ ...draft, type: t.k })}
+                      className={`px-2.5 py-1 text-xs rounded-md border transition ${draft.type === t.k ? "bg-stone-900 text-white border-stone-900" : "bg-white text-stone-700 border-stone-300 hover:border-stone-500"}`}>
+                      {t.l}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <Field label="URL del creativo" value={draft.url} onChange={v => setDraft({ ...draft, url: v })} placeholder="https://drive.google.com/..." mono full />
+              <div>
+                <label className="text-[11px] font-medium text-stone-600">Notas (opcional)</label>
+                <textarea value={draft.notes} onChange={e => setDraft({ ...draft, notes: e.target.value })}
+                  placeholder="Para qué se usa, instrucciones..."
+                  className="w-full mt-1 px-2.5 py-1.5 text-sm border border-stone-200 rounded-md min-h-[60px] focus:outline-none focus:border-stone-900" />
+              </div>
+              <button onClick={saveNew}
+                className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 text-sm font-medium bg-stone-900 text-white rounded-md hover:bg-stone-700">
+                <Upload size={14} /> Añadir y adjuntar
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ====================================================================
 // MESSAGE CARD con todas las funcionalidades v5
 // Props nuevas: comments, onAddComment, onRemoveComment, variants, onSaveVariants,
 // approval, onSetApproval, templateMeta, onSetTemplateMeta, me
@@ -405,13 +589,17 @@ function MessageCard({
   approval = null, onSetApproval,
   templateMeta = null, onSetTemplateMeta,
   me = "",
+  onAttachCreative, onRemoveCreativeAssoc,
 }) {
   const [expanded, setExpanded] = useState(true);
   const [editing, setEditing] = useState(false);
   const [showComments, setShowComments] = useState(false);
   const [showAB, setShowAB] = useState(false);
   const [showTpl, setShowTpl] = useState(false);
+  const [showVarPicker, setShowVarPicker] = useState(false);
+  const [showAttachModal, setShowAttachModal] = useState(false);
   const [newComment, setNewComment] = useState("");
+  const textareaRef = useRef(null);
 
   const effectiveCopy = editedCopy ?? msg.copy;
   const rendered = showVars ? replaceVars(effectiveCopy, vars) : effectiveCopy;
@@ -497,6 +685,14 @@ function MessageCard({
                     className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-stone-600 border border-stone-300 rounded-md hover:border-stone-900">
                     <FileCheck size={12} /> Template
                   </button>
+                  <button onClick={e => { e.stopPropagation(); setShowAttachModal(true); }}
+                    data-testid={`attach-creative-btn-${flowKey}-${msg.id || index}`}
+                    className={`inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium border rounded-md transition ${
+                      msgCreatives.length > 0 ? "text-purple-800 bg-purple-50 border-purple-300 hover:bg-purple-100"
+                                               : "text-stone-600 border-stone-300 hover:border-stone-900"
+                    }`}>
+                    <ImageIcon size={12} /> {msgCreatives.length > 0 ? `Creativos (${msgCreatives.length})` : "Adjuntar creativo"}
+                  </button>
                   <button onClick={e => { e.stopPropagation(); setShowComments(!showComments); }}
                     className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-stone-600 border border-stone-300 rounded-md hover:border-stone-900">
                     <MessageSquare size={12} /> {comments.length}
@@ -506,9 +702,37 @@ function MessageCard({
               </div>
               {editing ? (
                 <div>
-                  <textarea value={effectiveCopy} onChange={e => onEditCopy(e.target.value)}
+                  <textarea ref={textareaRef} value={effectiveCopy} onChange={e => onEditCopy(e.target.value)}
                     className="w-full min-h-[160px] p-3 text-sm font-mono bg-white border border-stone-300 rounded-md focus:outline-none focus:border-stone-900" />
-                  {isEdited && <button onClick={() => onEditCopy(null)} className="mt-2 text-[11px] text-stone-500 hover:text-stone-900">↺ Volver al original</button>}
+                  <div className="flex items-center gap-2 mt-2 flex-wrap">
+                    <button onClick={() => setShowVarPicker(v => !v)}
+                      data-testid={`toggle-var-picker-${flowKey}-${msg.id || index}`}
+                      className={`inline-flex items-center gap-1.5 px-3 py-1 text-[11px] font-medium rounded-md border transition ${
+                        showVarPicker ? "bg-emerald-600 text-white border-emerald-600" : "text-emerald-700 border-emerald-300 bg-white hover:bg-emerald-50"
+                      }`}>
+                      {"{…}"} {showVarPicker ? "Ocultar variables" : "Insertar variable"}
+                    </button>
+                    {isEdited && <button onClick={() => onEditCopy(null)} className="text-[11px] text-stone-500 hover:text-stone-900">↺ Volver al original</button>}
+                  </div>
+                  {showVarPicker && (
+                    <VarPicker vars={vars} onInsert={varName => {
+                      const ta = textareaRef.current;
+                      if (!ta) { onEditCopy(effectiveCopy + `{${varName}}`); return; }
+                      const start = ta.selectionStart ?? effectiveCopy.length;
+                      const end = ta.selectionEnd ?? effectiveCopy.length;
+                      const before = effectiveCopy.slice(0, start);
+                      const after = effectiveCopy.slice(end);
+                      const insertion = `{${varName}}`;
+                      onEditCopy(before + insertion + after);
+                      setTimeout(() => {
+                        try {
+                          ta.focus();
+                          const pos = start + insertion.length;
+                          ta.setSelectionRange(pos, pos);
+                        } catch {}
+                      }, 0);
+                    }} />
+                  )}
                 </div>
               ) : (
                 <div className="bg-white border border-stone-200 rounded-md p-3 text-sm text-stone-800 whitespace-pre-wrap leading-relaxed">{rendered}</div>
@@ -704,6 +928,15 @@ function MessageCard({
           )}
         </div>
       )}
+      {showAttachModal && onAttachCreative && (
+        <AttachCreativeModal
+          msgKey={msgKey}
+          creatives={creatives}
+          onAttach={(creative) => { onAttachCreative(msgKey, creative); }}
+          onRemove={(id) => onRemoveCreativeAssoc(msgKey, id)}
+          onClose={() => setShowAttachModal(false)}
+        />
+      )}
     </div>
   );
 }
@@ -714,6 +947,7 @@ function FlowView({
   variantsByMsg, onSaveVariants,
   approvalByMsg, onSetApproval,
   templatesByMsg, onSetTemplateMeta,
+  onAttachCreative, onRemoveCreativeAssoc,
   me,
 }) {
   const renderMsg = (m, i, pref) => {
@@ -732,6 +966,8 @@ function FlowView({
         templateMeta={templatesByMsg[mk]}
         onSetTemplateMeta={t => onSetTemplateMeta(mk, t)}
         me={me}
+        onAttachCreative={onAttachCreative}
+        onRemoveCreativeAssoc={onRemoveCreativeAssoc}
       />
     );
   };
@@ -964,8 +1200,65 @@ function ProjectsDashboard({ projects, onOpen, onCreate, onEdit, onDuplicate, on
 // ====================================================================
 // MINDMAP (dinámico según la estrategia del proyecto)
 // ====================================================================
-function MindMap({ strategyKey, onFlowClick }) {
-  const flows = getFlowsForStrategy(strategyKey);
+function FlowMiniMap({ flow, onMsgClick }) {
+  // Muestra los mensajes del flujo como chips conectados.
+  // Si el flujo tiene ramas (M3.A, M3.B...), agrupa visualmente.
+  const branches = flow.branching ? buildBranches(flow.items) : { main: flow.items };
+  const branchKeys = Object.keys(branches);
+
+  return (
+    <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
+      <div className="px-4 py-3 border-b border-stone-200 flex items-center gap-2" style={{ borderLeft: `4px solid ${flow.color}` }}>
+        <flow.icon size={14} style={{ color: flow.color }} />
+        <div className="flex-1">
+          <div className="text-sm font-semibold text-stone-900">{flow.label}</div>
+          <div className="text-[10px] text-stone-500">{flow.items.length} mensajes{flow.branching ? ` · ${branchKeys.length - (branches.main ? 0 : 1)} ramas` : ""}</div>
+        </div>
+        <button onClick={() => onMsgClick && onMsgClick(flow.key)}
+          className="text-[10px] font-medium text-stone-600 hover:text-stone-900 underline">
+          Ver flujo →
+        </button>
+      </div>
+      <div className="p-4 bg-stone-50 overflow-x-auto">
+        {branchKeys.map((bname, bi) => {
+          const items = branches[bname];
+          if (!items || items.length === 0) return null;
+          return (
+            <div key={bname} className={bi > 0 ? "mt-4 pt-4 border-t border-dashed border-stone-200" : ""}>
+              {flow.branching && (
+                <div className="text-[10px] font-semibold tracking-widest text-stone-500 uppercase mb-2">
+                  {bname === "main" ? "Secuencia principal" : bname}
+                </div>
+              )}
+              <div className="flex items-center gap-1.5 min-w-max">
+                {items.map((m, i) => (
+                  <React.Fragment key={`${bname}_${i}`}>
+                    <button
+                      onClick={() => onMsgClick && onMsgClick(flow.key, m.id || i)}
+                      title={m.objetivo || (m.copy || "").slice(0, 80)}
+                      className="bg-white border rounded-md px-2 py-1.5 text-left hover:border-stone-900 transition min-w-[90px] max-w-[130px]"
+                      style={{ borderColor: flow.color + "55" }}
+                    >
+                      <div className="text-[10.5px] font-mono font-semibold text-stone-900 truncate">{m.id || m.dia || `#${i+1}`}</div>
+                      <div className="text-[9.5px] text-stone-500 truncate">{m.timing || m.hora || m.fecha_relativa || ""}</div>
+                      {m.objetivo && <div className="text-[9.5px] text-stone-700 truncate mt-0.5">{m.objetivo}</div>}
+                    </button>
+                    {i < items.length - 1 && (
+                      <div className="text-stone-400 shrink-0 text-xs">→</div>
+                    )}
+                  </React.Fragment>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function MindMap({ strategyKey, flows, onFlowClick }) {
+  const flowsResolved = flows || getFlowsForStrategy(strategyKey);
 
   // Para webinar: diagrama original
   if (strategyKey === "webinar") {
@@ -998,7 +1291,18 @@ function MindMap({ strategyKey, onFlowClick }) {
       { from: "venta_comunidad", to: "conversion" },
       { from: "replay", to: "conversion" },
     ];
-    return <MindMapSVG nodes={nodes} edges={edges} onFlowClick={onFlowClick} viewBox="0 0 1320 480" />;
+    return (
+      <div className="space-y-6">
+        <MindMapSVG nodes={nodes} edges={edges} onFlowClick={onFlowClick} viewBox="0 0 1320 480" />
+        <div>
+          <h3 className="text-lg font-bold text-stone-900 mb-1">Mapa por flujo</h3>
+          <p className="text-xs text-stone-500 mb-4">Vista secuencial de los mensajes dentro de cada flujo</p>
+          <div className="space-y-4">
+            {flowsResolved.map(f => <FlowMiniMap key={f.key} flow={f} onMsgClick={onFlowClick} />)}
+          </div>
+        </div>
+      </div>
+    );
   }
 
   // Para evergreen: diagrama lineal
@@ -1022,7 +1326,18 @@ function MindMap({ strategyKey, onFlowClick }) {
     { from: "signal", to: "nurturing", label: "No (continuar)" },
     { from: "venta_evergreen", to: "conversion" },
   ];
-  return <MindMapSVG nodes={nodes} edges={edges} onFlowClick={onFlowClick} viewBox="0 0 1300 400" />;
+  return (
+    <div className="space-y-6">
+      <MindMapSVG nodes={nodes} edges={edges} onFlowClick={onFlowClick} viewBox="0 0 1300 400" />
+      <div>
+        <h3 className="text-lg font-bold text-stone-900 mb-1">Mapa por flujo</h3>
+        <p className="text-xs text-stone-500 mb-4">Vista secuencial de los mensajes dentro de cada flujo</p>
+        <div className="space-y-4">
+          {flowsResolved.map(f => <FlowMiniMap key={f.key} flow={f} onMsgClick={onFlowClick} />)}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function MindMapSVG({ nodes, edges, onFlowClick, viewBox }) {
@@ -1217,7 +1532,7 @@ function CreativesPanel({ creatives, setCreatives, allMessages }) {
 // ====================================================================
 // CONEXIONES
 // ====================================================================
-function ConnectionsPanel({ conn, setConn, projectName }) {
+function ConnectionsPanel({ conn, setConn, projectName, notifyConfig, setNotifyConfig }) {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
   const [testPhone, setTestPhone] = useState("");
@@ -1298,6 +1613,30 @@ function ConnectionsPanel({ conn, setConn, projectName }) {
           <Field label="Webhook URL (Meta → n8n)" value={conn.n8nWebhookUrl} onChange={v => update("n8nWebhookUrl", v)} mono full />
           <Field label="n8n API URL" value={conn.n8nApiUrl} onChange={v => update("n8nApiUrl", v)} mono />
           <Field label="n8n API Key" value={conn.n8nApiKey} onChange={v => update("n8nApiKey", v)} mono password />
+        </div>
+      </div>
+      <div className="bg-white border border-stone-200 rounded-lg p-5">
+        <div className="flex items-center gap-2 mb-1">
+          <div className="w-6 h-6 rounded bg-indigo-600 flex items-center justify-center text-white text-xs font-bold">🔔</div>
+          <div className="font-semibold text-stone-900">Notificaciones al equipo</div>
+        </div>
+        <div className="text-[11.5px] text-stone-500 mb-4 leading-relaxed">
+          Cuando el cliente apruebe <strong>más del 80%</strong> de los mensajes en el link mágico, enviamos un aviso automático a estos webhooks.
+        </div>
+        <div className="grid grid-cols-1 gap-3">
+          <Field label="Slack incoming webhook URL" value={notifyConfig?.slack_url || ""}
+            onChange={v => setNotifyConfig({ ...(notifyConfig || {}), slack_url: v })}
+            placeholder="https://hooks.slack.com/services/T.../B.../..." mono full />
+          <Field label="Discord webhook URL" value={notifyConfig?.discord_url || ""}
+            onChange={v => setNotifyConfig({ ...(notifyConfig || {}), discord_url: v })}
+            placeholder="https://discord.com/api/webhooks/.../..." mono full />
+          {notifyConfig?.notified_80_at && (
+            <div className="text-[10.5px] text-emerald-700 bg-emerald-50 border border-emerald-200 rounded p-2">
+              ✅ Ya se notificó al equipo el {new Date(notifyConfig.notified_80_at).toLocaleString("es-ES")} ·
+              <button onClick={() => setNotifyConfig({ ...notifyConfig, notified_80_at: null, notified_stats: null })}
+                className="ml-2 underline hover:text-emerald-900">Resetear</button>
+            </div>
+          )}
         </div>
       </div>
       <div className="bg-white border border-stone-200 rounded-lg p-5">
@@ -2859,6 +3198,7 @@ function ProjectWorkspace({ project, onBack, me }) {
   const [edits, setEdits] = useState({});
   const [creatives, setCreatives] = useState([]);
   const [connections, setConnections] = useState({});
+  const [notifyConfig, setNotifyConfig] = useState({ slack_url: "", discord_url: "" });
   const [captacionConfig, setCaptacionConfig] = useState({
     platform: "", formHasPhone: null, whatsappNumber: "", webinarDate: "",
   });
@@ -2907,6 +3247,8 @@ function ProjectWorkspace({ project, onBack, me }) {
       if (se) setEdits(se);
       if (sc) setCreatives(sc);
       if (scn) setConnections(scn);
+      const sncfg = await loadFromStorage(pk(pid, "notify_config"));
+      if (sncfg) setNotifyConfig(sncfg);
       const scap = await loadFromStorage(pk(pid, "captacion"));
       if (scap) setCaptacionConfig(scap);
       if (sp) setAIPrompt(sp);
@@ -2934,6 +3276,7 @@ function ProjectWorkspace({ project, onBack, me }) {
   useEffect(() => debouncedSave("edits", edits), [edits, loaded]);
   useEffect(() => debouncedSave("creatives", creatives), [creatives, loaded]);
   useEffect(() => debouncedSave("connections", connections), [connections, loaded]);
+  useEffect(() => debouncedSave("notify_config", notifyConfig), [notifyConfig, loaded]);
   useEffect(() => debouncedSave("captacion", captacionConfig), [captacionConfig, loaded]);
   useEffect(() => debouncedSave("aiPrompt", aiPrompt), [aiPrompt, loaded]);
   useEffect(() => debouncedSave("comments", commentsByMsg), [commentsByMsg, loaded]);
@@ -2967,6 +3310,23 @@ function ProjectWorkspace({ project, onBack, me }) {
     setCommentsByMsg(prev => ({ ...prev, [msgKey]: (prev[msgKey] || []).filter(c => c.id !== id) }));
   };
   const setVariants = (msgKey, v) => { setVariantsByMsg(prev => ({ ...prev, [msgKey]: v })); logHistory("editó A/B", msgKey); };
+
+  // Adjuntar creativo desde MessageCard: si creative tiene id existente -> reasignar messageKey;
+  // si no, crear nuevo creativo asociado al mensaje.
+  const attachCreative = (msgKey, creative) => {
+    setCreatives(prev => {
+      if (creative && creative.id && prev.find(c => c.id === creative.id)) {
+        return prev.map(c => c.id === creative.id ? { ...c, messageKey: msgKey } : c);
+      }
+      const newC = { ...creative, id: Date.now().toString(36) + Math.random().toString(36).slice(2, 5), messageKey: msgKey };
+      return [...prev, newC];
+    });
+    logHistory("adjuntó creativo", msgKey);
+  };
+  const removeCreativeAssoc = (msgKey, creativeId) => {
+    setCreatives(prev => prev.map(c => c.id === creativeId ? { ...c, messageKey: "" } : c));
+    logHistory("desvinculó creativo", msgKey);
+  };
   const setApproval = (msgKey, a) => {
     setApprovalByMsg(prev => { const n = { ...prev }; if (a === null) delete n[msgKey]; else n[msgKey] = a; return n; });
     if (a) logHistory(a.status === "approved" ? "aprobó" : "pidió cambios", msgKey);
@@ -3160,12 +3520,15 @@ function ProjectWorkspace({ project, onBack, me }) {
                 variantsByMsg={variantsByMsg} onSaveVariants={setVariants}
                 approvalByMsg={approvalByMsg} onSetApproval={setApproval}
                 templatesByMsg={templatesByMsg} onSetTemplateMeta={setTemplateMeta}
-                me={me} />}
+                me={me}
+                onAttachCreative={attachCreative}
+                onRemoveCreativeAssoc={removeCreativeAssoc}
+              />}
             </main>
           </>
         )}
 
-        {activeTab === "mindmap" && <main className="flex-1 min-w-0 px-8 py-8"><MindMap strategyKey={project.strategy} onFlowClick={fk => { setActiveFlow(fk); setActiveTab("flows"); }} /></main>}
+        {activeTab === "mindmap" && <main className="flex-1 min-w-0 px-8 py-8"><MindMap strategyKey={project.strategy} flows={FLOWS} onFlowClick={fk => { setActiveFlow(fk); setActiveTab("flows"); }} /></main>}
         {activeTab === "calendar" && <main className="flex-1 min-w-0 px-8 py-8"><CalendarPanel flows={FLOWS} vars={vars} /></main>}
         {activeTab === "simulator" && <main className="flex-1 min-w-0 px-8 py-8"><SimulatorPanel flows={FLOWS} vars={vars} edits={edits} /></main>}
         {activeTab === "checker" && <main className="flex-1 min-w-0 px-8 py-8"><CheckerPanel flows={FLOWS} vars={vars} edits={edits} creatives={creatives} templatesByMsg={templatesByMsg} variantsByMsg={variantsByMsg} onGoToMessage={goToMessage} /></main>}
@@ -3174,7 +3537,7 @@ function ProjectWorkspace({ project, onBack, me }) {
         {activeTab === "client" && <main className="flex-1 min-w-0 px-8 py-8"><ClientReviewPanel flows={FLOWS} vars={vars} edits={edits} approvalByMsg={approvalByMsg} onSetApproval={setApproval} me={me} projectName={project.name} projectId={project.id} /></main>}
         {activeTab === "snapshots" && <main className="flex-1 min-w-0 px-8 py-8"><SnapshotsPanel snapshots={snapshots} onCreate={createSnapshot} onRestore={restoreSnapshot} onDelete={deleteSnapshot} /></main>}
         {activeTab === "history" && <main className="flex-1 min-w-0 px-8 py-8"><HistoryPanel history={history} /></main>}
-        {activeTab === "connections" && <main className="flex-1 min-w-0 px-8 py-8"><ConnectionsPanel conn={connections} setConn={setConnections} projectName={project.name} /></main>}
+        {activeTab === "connections" && <main className="flex-1 min-w-0 px-8 py-8"><ConnectionsPanel conn={connections} setConn={setConnections} projectName={project.name} notifyConfig={notifyConfig} setNotifyConfig={setNotifyConfig} /></main>}
         {activeTab === "ai" && <main className="flex-1 min-w-0 px-8 py-8"><AIPromptPanel aiPrompt={aiPrompt} setAIPrompt={setAIPrompt} vars={vars} /></main>}
         {activeTab === "captacion" && <main className="flex-1 min-w-0 px-8 py-8"><CaptacionPanel config={captacionConfig} setConfig={setCaptacionConfig} projectName={project.name} n8nWebhookUrl={connections.n8nWebhookUrl} /></main>}
       </div>
@@ -3399,7 +3762,12 @@ function PublicReviewPage({ token }) {
         ))}
 
         <div className="text-center text-[11px] text-stone-400 py-6">
-          Powered by WAFLOW · by Fascinads
+          <a href={`${API}/review/${token}/summary.pdf`} target="_blank" rel="noreferrer"
+            data-testid="download-pdf-btn"
+            className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-indigo-700 bg-white border border-indigo-300 rounded-md hover:bg-indigo-50 mb-4">
+            <Download size={14} /> Descargar resumen (PDF)
+          </a>
+          <div>Powered by WAFLOW · by Fascinads</div>
         </div>
       </main>
     </div>
