@@ -875,9 +875,14 @@ function ProjectsDashboard({ projects, onOpen, onCreate, onEdit, onDuplicate, on
     <div className="min-h-screen bg-stone-50" style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
       <header className="bg-white border-b border-stone-200">
         <div className="max-w-[1400px] mx-auto px-6 py-4 flex items-center justify-between">
-          <div>
-            <div className="text-lg font-bold text-stone-900">WhatsApp Flow Editor</div>
-            <div className="text-[11px] text-stone-500">Panel de proyectos de agencia · {activeCount} activos · {archivedCount} archivados</div>
+          <div className="flex items-center gap-3">
+            <div className="bg-black rounded-lg px-3 py-2 flex items-center justify-center">
+              <img src="/fascinads-logo.png" alt="FASCINADS" className="h-6 w-auto select-none" draggable="false" />
+            </div>
+            <div>
+              <div className="text-sm font-semibold text-stone-900 tracking-tight">Flow Editor</div>
+              <div className="text-[11px] text-stone-500">Panel de proyectos · {activeCount} activos · {archivedCount} archivados</div>
+            </div>
           </div>
           <div className="flex items-center gap-2">
             <button onClick={onEditMe}
@@ -3007,6 +3012,9 @@ function ProjectWorkspace({ project, onBack, me }) {
           <div className="flex items-center justify-between gap-4 mb-3">
             <div className="flex items-center gap-3 min-w-0">
               <button onClick={onBack} className="text-stone-500 hover:text-stone-900 p-1.5 rounded hover:bg-stone-100"><ArrowLeft size={16} /></button>
+              <div className="bg-black rounded-md px-2 py-1 flex items-center justify-center shrink-0">
+                <img src="/fascinads-logo.png" alt="FASCINADS" className="h-4 w-auto select-none" draggable="false" />
+              </div>
               <div className="w-8 h-8 rounded-lg flex items-center justify-center text-lg" style={{ backgroundColor: project.color + "22", border: `2px solid ${project.color}` }}>{project.emoji}</div>
               <div className="min-w-0">
                 <div className="text-sm font-bold tracking-tight text-stone-900 truncate">{project.name}</div>
