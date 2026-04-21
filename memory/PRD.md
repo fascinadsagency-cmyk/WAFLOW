@@ -97,7 +97,39 @@ Editor colaborativo multi-proyecto de secuencias de mensajes de WhatsApp para ag
   - Pinta burbujas tipo WhatsApp con multi-turn
   - Usa el system_prompt actual ya renderizado con variables
 
-### Iter 5 (21 ene 2026) — Autopilot de lanzamiento
+### Iter 6 (21 ene 2026) — Modo Lanzamiento Activo
+- **Backend — 4 endpoints nuevos**:
+  - `POST /api/launch/deploy`: recibe `{project_id, workflow_json, n8n_webhook_url, snapshot_id}`, hace relay al webhook de deploy de n8n, persiste `wa_editor:p:{pid}:active_launch` con `{launch_id, status, deploy_result, ...}`
+  - `GET /api/launch/{pid}/status`: devuelve `{active, launch, stats: {sent, delivered, read, failed, clicked, replied}, delivery_rate, read_rate}` calculados desde `/api/events` del proyecto
+  - `POST /api/launch/complete`: archiva launch a `launch_history` (últimos 20) y BORRA `active_launch`
+  - `POST /api/launch/{pid}/stop`: igual que complete pero con reason='stopped'
+- **Frontend — LaunchWizard modal**:
+  - Botón "🚀 Lanzar ahora" gigante rojo/naranja col-span-2 al inicio de las Acciones del Autopilot
+  - Disabled si `readyPct<100` OR `status==='frozen'` OR `launchStatus.active`
+  - Al abrir: auto-crea snapshot etiquetado "Pre-launch · {fecha}" + abre wizard con 5 steps (📸 snapshot / 🚀 deploy / 📡 polling / ⏱️ 95% / 🔒 auto-freeze)
+  - Envía workflow a `/api/launch/deploy`
+- **Live Launch card** (aparece bajo el checklist cuando hay launch activo):
+  - 4 métricas (Enviados/Entregados/Leídos/Fallidos)
+  - Barra de tasa de entrega (verde si ≥95%, indigo si <)
+  - Botón "⏹ Cancelar" que llama a `/api/launch/{pid}/stop`
+- **Auto-freeze**: cuando `delivery_rate >= 95%`, el frontend llama a `/api/launch/complete` automáticamente y actualiza `project.status='frozen'` via `onUpdateProject`
+- **Polling**: cada 30s `GET /api/launch/{pid}/status`. Se corta automáticamente cuando el launch ya no está activo (performance improvement tras feedback del testing agent)
+- **ConnectionsPanel**: nuevo campo "Webhook deploy (🚀 Lanzar ahora)" (`n8nDeployWebhookUrl`)
+- **createSnapshot** ahora devuelve el ID del snapshot creado (necesario para pasarlo al wizard)
+
+## Testing
+- Iter 6: **13/13 backend** (8 nuevos launch + 5 regresión) + **~85% frontend** end-to-end ✅
+- El único flujo NO testeable end-to-end en UI fue clicar el botón con `readyPct=100` (requiere seed de todos los checks OK). El endpoint `/api/launch/deploy` sí está 100% cubierto por pytest (httpbin 200 success + httpbin 500 fail).
+- Post-iter6 improvements aplicados:
+  - `complete` y `stop` ahora borran `active_launch` (no solo cambian status) → más robusto, no deja cards fantasma
+  - Polling se auto-para cuando no hay launch activo → ahorra 1 req/30s por proyecto parked
+  - URL del nodo Evolution en export n8n con prefix `=` (expression mode)
+
+## Known limitations (para priorizar si escala)
+- `launch_status` calcula stats en Python con `.find().to_list(5000)`. Para proyectos >5k events migrar a aggregation pipeline `$group`.
+- `/api/launch/deploy` acepta cualquier string como webhook URL (no valida contra `HttpUrl`). httpx bloquea ~2s con hosts inválidos y devuelve `deploy_failed` pero validar con pydantic sería más limpio.
+- `stopLaunch` UI usa `window.confirm` — parar un launch en producción es irreversible, debería usar el `ConfirmDialog` custom como deleteProject.
+- `App.jsx` supera las **5100 líneas**. Urgente extraer `AutopilotPanel` y `LaunchWizard` a archivos separados antes de iter-7.
 - **Nueva pestaña "Autopilot"** (primera en la barra, icono ⚡):
   - Header hero: `{readyPct}% listo para lanzar` con barra de progreso; cambia a gradiente slate-oscuro + "🔒 Proyecto congelado" cuando status='frozen'
   - Timeline de 5 fases: Setup → Copies → Creativos → Deploy → Launch (con emojis, estados done/active/pending)

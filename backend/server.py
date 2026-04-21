@@ -728,31 +728,36 @@ class LaunchCompleteBody(BaseModel):
 
 @api_router.post("/launch/complete")
 async def launch_complete(body: LaunchCompleteBody):
-    """Marca el launch como completado (manual o auto). No borra el registro — queda en histórico."""
+    """Marca el launch como completado (manual o auto). Archiva en histórico y BORRA active_launch."""
     launch = await _read_storage(f"wa_editor:p:{body.project_id}:active_launch")
     if not launch:
         raise HTTPException(status_code=404, detail="No hay launch activo")
     launch["status"] = "completed"
     launch["completed_at"] = datetime.now(timezone.utc).isoformat()
     launch["complete_reason"] = body.reason
-    await _write_storage(f"wa_editor:p:{body.project_id}:active_launch", launch)
-    # Archivar en histórico
+    # Archivar en histórico (últimos 20)
     history_key = f"wa_editor:p:{body.project_id}:launch_history"
     history = await _read_storage(history_key) or []
     history.insert(0, launch)
-    await _write_storage(history_key, history[:20])  # mantener últimos 20
+    await _write_storage(history_key, history[:20])
+    # Borrar active_launch (ya no está activo)
+    await db.storage_shared.delete_one({"key": f"wa_editor:p:{body.project_id}:active_launch"})
     return {"ok": True, "launch": launch}
 
 
 @api_router.post("/launch/{project_id}/stop")
 async def launch_stop(project_id: str):
-    """Cancela el launch activo sin marcarlo completado."""
+    """Cancela el launch activo. Archiva en histórico y BORRA active_launch."""
     launch = await _read_storage(f"wa_editor:p:{project_id}:active_launch")
     if not launch:
         raise HTTPException(status_code=404, detail="No hay launch activo")
     launch["status"] = "stopped"
     launch["stopped_at"] = datetime.now(timezone.utc).isoformat()
-    await _write_storage(f"wa_editor:p:{project_id}:active_launch", launch)
+    history_key = f"wa_editor:p:{project_id}:launch_history"
+    history = await _read_storage(history_key) or []
+    history.insert(0, launch)
+    await _write_storage(history_key, history[:20])
+    await db.storage_shared.delete_one({"key": f"wa_editor:p:{project_id}:active_launch"})
     return {"ok": True, "launch": launch}
 
 

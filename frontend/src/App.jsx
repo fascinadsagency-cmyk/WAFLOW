@@ -2116,10 +2116,12 @@ function AutopilotPanel({
     { key: "launch", label: "5. Lanzamiento", desc: "Captación activa + monitoreo", icon: "📡", done: false, active: false },
   ];
 
-  // Polling del launch activo (cada 30s)
+  // Polling del launch activo (cada 30s) — solo cuando hay launch activo o recién deployado
   useEffect(() => {
     let timer;
+    let stopped = false;
     const poll = async () => {
+      if (stopped) return;
       try {
         const r = await fetch(`${API}/launch/${project.id}/status`);
         const data = await r.json();
@@ -2135,11 +2137,16 @@ function AutopilotPanel({
             if (onUpdateProject) onUpdateProject(project.id, { status: "frozen" });
           } catch {}
         }
+        // Si no hay launch activo (o se completó/paró), cortar el polling
+        if (!data.active || ["completed", "stopped"].includes(data.launch?.status)) {
+          if (timer) { clearInterval(timer); timer = null; }
+        }
       } catch {}
     };
-    poll();
+    poll(); // 1 llamada inicial siempre para detectar si ya hay launch activo
+    // Arrancar polling solo si hay launch activo (tras la 1ª respuesta)
     timer = setInterval(poll, 30000);
-    return () => clearInterval(timer);
+    return () => { stopped = true; if (timer) clearInterval(timer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project.id, project.status]);
 
