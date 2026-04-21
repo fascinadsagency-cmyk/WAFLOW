@@ -6,7 +6,7 @@ import {
   Upload, Link as LinkIcon, Send, AlertTriangle, Trash2, Play, ArrowLeft,
   Plus, Folder, Archive, Edit3, Calendar as CalIcon, GitBranch, Clock, Activity,
   History, FlaskConical, FileCheck, MessageSquare, CheckCircle2, AlertCircle,
-  Share2, ExternalLink, ClipboardCheck, GitCommit, TrendingUp, Zap
+  Share2, ExternalLink, ClipboardCheck, GitCommit, TrendingUp, Zap, User
 } from "lucide-react";
 
 import { ConfirmProvider, useConfirm } from "./hooks/useConfirm";
@@ -231,7 +231,7 @@ REGLAS:
 const PROJECT_COLORS = ["#25D366", "#128C7E", "#075E54", "#DC2626", "#F59E0B", "#8B5CF6", "#0EA5E9", "#EC4899", "#10B981", "#6366F1"];
 const PROJECT_EMOJIS = ["🚀", "💼", "🎯", "🔥", "⚡", "💎", "🌟", "🎨", "📊", "🏆", "🌊", "🦄", "🌺", "🎪"];
 
-function newProject({ name, strategy, client, notes, emoji, color } = {}) {
+function newProject({ name, strategy, client, notes, emoji, color, created_by } = {}) {
   const id = "proj_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   return {
     id,
@@ -242,6 +242,7 @@ function newProject({ name, strategy, client, notes, emoji, color } = {}) {
     color: color || PROJECT_COLORS[Math.floor(Math.random() * PROJECT_COLORS.length)],
     notes: notes || "",
     status: "active",
+    created_by: created_by || null,
     created_at: Date.now(),
     updated_at: Date.now(),
   };
@@ -1655,8 +1656,8 @@ function MeDialog({ me, onSave, onClose }) {
   );
 }
 
-function ProjectDialog({ project, onSave, onClose, isNew }) {
-  const [draft, setDraft] = useState(project || newProject());
+function ProjectDialog({ project, onSave, onClose, isNew, me }) {
+  const [draft, setDraft] = useState(project || newProject({ created_by: me || null }));
   return (
     <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={onClose}>
       <div className="bg-white rounded-2xl overflow-hidden shadow-2xl max-w-2xl w-full" onClick={e => e.stopPropagation()}>
@@ -1758,8 +1759,14 @@ function ProjectsDashboard({ projects, onOpen, onCreate, onEdit, onDuplicate, on
           </div>
           <div className="flex items-center gap-2">
             <button onClick={onEditMe}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-stone-700 border border-stone-300 rounded-md hover:border-stone-900">
-              👤 {me || "Sin nombre"}
+              data-testid="connected-user-dashboard"
+              title="Clic para cambiar el nombre del usuario"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-indigo-800 bg-indigo-50 border border-indigo-200 rounded-md hover:bg-indigo-100">
+              <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-indigo-600 text-white text-[10px] font-bold">
+                {(me || "?").charAt(0).toUpperCase()}
+              </span>
+              Conectado · <strong>{me || "sin nombre"}</strong>
+              <Edit3 size={10} className="opacity-60" />
             </button>
             <button onClick={onCreate}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-stone-900 text-white rounded-md hover:bg-stone-700">
@@ -1821,7 +1828,14 @@ function ProjectsDashboard({ projects, onOpen, onCreate, onEdit, onDuplicate, on
                       <span className="bg-stone-100 text-stone-700 px-1.5 py-0.5 rounded">{strat?.emoji} {strat?.label}</span>
                       {p.status === "archived" && <span className="bg-amber-50 text-amber-700 border border-amber-200 px-1.5 py-0.5 rounded">Archivado</span>}
                     </div>
-                    <div className="text-[10px] text-stone-400 mt-2">Actualizado {(p.updated_at || p.created_at) ? new Date(p.updated_at || p.created_at).toLocaleDateString("es-ES", { day: "numeric", month: "short" }) : "—"}</div>
+                    <div className="text-[10px] text-stone-400 mt-2 flex items-center gap-2 flex-wrap">
+                      <span>Actualizado {(p.updated_at || p.created_at) ? new Date(p.updated_at || p.created_at).toLocaleDateString("es-ES", { day: "numeric", month: "short" }) : "—"}</span>
+                      {p.created_by && (
+                        <span data-testid={`project-creator-${p.id}`} className="inline-flex items-center gap-1 bg-indigo-50 text-indigo-700 border border-indigo-200 px-1.5 py-0.5 rounded">
+                          <User size={9} /> {p.created_by}
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
               );
@@ -5500,11 +5514,25 @@ function ProjectWorkspace({ project, onBack, me, onUpdateProject }) {
               <div className="w-8 h-8 rounded-lg flex items-center justify-center text-lg" style={{ backgroundColor: project.color + "22", border: `2px solid ${project.color}` }}>{project.emoji}</div>
               <div className="min-w-0">
                 <div className="text-sm font-bold tracking-tight text-stone-900 truncate">{project.name}{project.status === "frozen" && <span className="ml-2 text-[10px] bg-slate-800 text-white px-2 py-0.5 rounded font-semibold uppercase tracking-widest">🔒 Congelado</span>}</div>
-                <div className="text-[10px] text-stone-500 truncate">{project.client || "Sin cliente"} · {strat?.emoji} {strat?.label}</div>
+                <div className="text-[10px] text-stone-500 truncate flex items-center gap-2 flex-wrap">
+                  <span>{project.client || "Sin cliente"} · {strat?.emoji} {strat?.label}</span>
+                  {project.created_by && (
+                    <span data-testid="project-creator-badge" className="inline-flex items-center gap-1 bg-indigo-50 text-indigo-700 border border-indigo-200 px-1.5 py-0.5 rounded">
+                      <User size={9} /> Creado por {project.created_by}
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
             <div className="flex items-center gap-2">
               <div className="text-[10px] text-stone-500 hidden md:block">{totalMessages} msgs · {vars.length} vars {editCount > 0 && <span className="text-emerald-700">· {editCount} editados</span>} {undefinedVars.length > 0 && <span className="text-amber-700">· {undefinedVars.length} sin def</span>}</div>
+              <div data-testid="connected-user-workspace" title={`Estás conectado como ${me || "sin nombre"}`}
+                className="inline-flex items-center gap-1.5 px-2 py-1 text-[11px] text-indigo-800 bg-indigo-50 border border-indigo-200 rounded-md">
+                <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-indigo-600 text-white text-[9px] font-bold">
+                  {(me || "?").charAt(0).toUpperCase()}
+                </span>
+                <strong>{me || "sin nombre"}</strong>
+              </div>
               <div className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] rounded-md ${saveStatus === "offline" ? "text-amber-700 bg-amber-50" : saveStatus === "saving" ? "text-stone-600 bg-stone-100" : "text-emerald-700 bg-emerald-50"}`}>
                 <SaveIcon size={12} /> {saveLabel}
               </div>
@@ -5737,6 +5765,7 @@ function MainApp() {
         <ProjectDialog
           project={showProjectDialog.project}
           isNew={showProjectDialog.isNew}
+          me={me}
           onSave={showProjectDialog.isNew ? handleCreate : handleSaveEdit}
           onClose={() => setShowProjectDialog(null)}
         />

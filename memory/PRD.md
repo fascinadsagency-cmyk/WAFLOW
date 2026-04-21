@@ -117,7 +117,18 @@ Editor colaborativo multi-proyecto de secuencias de mensajes de WhatsApp para ag
 - **ConnectionsPanel**: nuevo campo "Webhook deploy (🚀 Lanzar ahora)" (`n8nDeployWebhookUrl`)
 - **createSnapshot** ahora devuelve el ID del snapshot creado (necesario para pasarlo al wizard)
 
-### Iter 13 (21 feb 2026) — Recorrer flujo completo en teléfono QA
+### Iter 14 (21 feb 2026) — Visibilidad del usuario conectado y creador del proyecto
+- **Modelo `newProject`**: añadido campo `created_by` que se inyecta automáticamente con el valor de `me` (nombre del usuario conectado) al crear un proyecto nuevo. ProjectDialog recibe el prop `me` y lo pasa al default draft.
+- **ProjectsDashboard header**: nuevo badge `data-testid="connected-user-dashboard"` con avatar circular (inicial del nombre) + "Conectado · **nombre**" + icono Edit3. Estilo indigo consistente con la paleta de la app. Click abre el modal MeDialog para cambiar el nombre.
+- **Card del proyecto en ProjectsDashboard**: debajo de "Actualizado DD mmm" se muestra ahora un badge pequeño `data-testid="project-creator-{id}"` con el icono User + el nombre del creador (solo si `created_by` está presente, así no afecta proyectos legacy).
+- **ProjectWorkspace header**: añadidos 2 nuevos elementos:
+  - Debajo del nombre del proyecto: badge `project-creator-badge` con "Creado por X" (si existe).
+  - A la derecha: badge `connected-user-workspace` con avatar + nombre del usuario actual.
+- **Import lucide**: añadido `User` al top-level import.
+- **Backwards compat**: proyectos existentes sin `created_by` no muestran el badge (UI gracia por `&&`). Editando un proyecto viejo no se asigna retroactivamente (preserva la semántica: "creado por" ≠ "modificado por").
+- **Testing iter-14**: compila limpio, 0 lint warnings, 35/35 regresión OK. Smoke visual OK (dashboard muestra badge "Conectado · sin nombre" con avatar indigo).
+
+
 - **Backend — 3 endpoints nuevos** (tras Meta Templates Sync):
   - `POST /api/whatsapp/run-flow-test` — recibe `{project_id, flow_key, to_phone, speedup_seconds, items[]}`. Valida credenciales Meta del proyecto, crea doc en `db.flow_test_runs` con `status:"running"`, arranca `_flow_test_run_task` via `asyncio.create_task()`, devuelve `{run_id, total}` inmediatamente. Cada item contiene `{msg_key, template_name, language, params[], header_media_url, header_media_type}`.
   - `GET /api/whatsapp/run-flow-test/{run_id}` — polling público (proyección excluye access_token/phone_number_id/items) devuelve estado con `done/total/status/results[]`.
