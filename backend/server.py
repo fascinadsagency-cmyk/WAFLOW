@@ -871,6 +871,305 @@ async def launch_stop(project_id: str):
 
 
 # ============================================================
+# CLIENT INTAKE — checklist colaborativo agencia ↔ cliente
+# Link público /intake/{token} donde el cliente rellena variables + sube creativos.
+# Flujo: agencia marca qué pedir (mixto auto+manual) → cliente rellena →
+# pending review → agencia aprueba → aplica al proyecto.
+# ============================================================
+import secrets as _secrets
+from fastapi import UploadFile, File, Form
+from fastapi.responses import StreamingResponse
+from motor.motor_asyncio import AsyncIOMotorGridFSBucket
+
+_gridfs_bucket = AsyncIOMotorGridFSBucket(db, bucket_name="intake_files")
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
+
+
+class IntakeCreateBody(BaseModel):
+    project_id: str
+    items: List[Dict[str, Any]]  # [{id, type:'variable'|'creative', key, label, section, example?, requested: bool}]
+
+
+class IntakeUpdateItemsBody(BaseModel):
+    items: List[Dict[str, Any]]
+
+
+class IntakeClientSaveBody(BaseModel):
+    item_id: str
+    value: Optional[str] = None  # None para borrar
+
+
+class IntakeReviewBody(BaseModel):
+    item_id: str
+    action: str  # "approve" | "reject"
+    comment: Optional[str] = None
+
+
+async def _get_intake(token: str) -> Dict[str, Any]:
+    rec = await db.intake_tokens.find_one({"token": token}, {"_id": 0})
+    if not rec:
+        raise HTTPException(status_code=404, detail="Link de intake no válido")
+    return rec
+
+
+@api_router.post("/intake/create")
+async def intake_create(body: IntakeCreateBody):
+    """Agencia crea o reemplaza el intake del proyecto. Devuelve token."""
+    existing = await db.intake_tokens.find_one({"project_id": body.project_id}, {"_id": 0})
+    token = existing["token"] if existing else _secrets.token_urlsafe(18)
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "token": token,
+        "project_id": body.project_id,
+        "items": body.items,
+        "created_at": existing.get("created_at") if existing else now,
+        "updated_at": now,
+        "completed_at": existing.get("completed_at") if existing else None,
+    }
+    await db.intake_tokens.update_one({"token": token}, {"$set": doc}, upsert=True)
+    return {"ok": True, "token": token}
+
+
+@api_router.get("/intake/project/{project_id}")
+async def intake_get_for_project(project_id: str):
+    """Agencia consulta el intake del proyecto (si existe)."""
+    rec = await db.intake_tokens.find_one({"project_id": project_id}, {"_id": 0})
+    if not rec:
+        return {"exists": False}
+    return {"exists": True, **rec}
+
+
+@api_router.put("/intake/project/{project_id}/items")
+async def intake_update_items(project_id: str, body: IntakeUpdateItemsBody):
+    """Agencia actualiza qué pedir (toggle requested, añadir/quitar custom)."""
+    rec = await db.intake_tokens.find_one({"project_id": project_id})
+    if not rec:
+        raise HTTPException(status_code=404, detail="Primero crea el intake")
+    now = datetime.now(timezone.utc).isoformat()
+    await db.intake_tokens.update_one(
+        {"project_id": project_id},
+        {"$set": {"items": body.items, "updated_at": now}},
+    )
+    return {"ok": True}
+
+
+@api_router.get("/intake/{token}")
+async def intake_public_get(token: str):
+    """Cliente obtiene su checklist (vista pública, sin project id expuesto)."""
+    rec = await _get_intake(token)
+    # Solo devolver items requested=true al cliente + project name para contexto
+    projects = await _read_storage(PROJECTS_LIST_KEY) or []
+    project = next((p for p in projects if p.get("id") == rec["project_id"]), None)
+    visible = [it for it in rec.get("items", []) if it.get("requested")]
+    return {
+        "token": token,
+        "project_name": (project or {}).get("name", "Proyecto"),
+        "project_emoji": (project or {}).get("emoji", "🚀"),
+        "items": visible,
+        "completed_at": rec.get("completed_at"),
+    }
+
+
+@api_router.post("/intake/{token}/save")
+async def intake_client_save(token: str, body: IntakeClientSaveBody):
+    """Cliente guarda un valor (texto) → queda en status 'pending'."""
+    rec = await _get_intake(token)
+    items = rec.get("items", [])
+    idx = next((i for i, it in enumerate(items) if it.get("id") == body.item_id), None)
+    if idx is None:
+        raise HTTPException(status_code=404, detail="Item no encontrado")
+    it = items[idx]
+    if not it.get("requested"):
+        raise HTTPException(status_code=403, detail="Este item no fue solicitado")
+    now = datetime.now(timezone.utc).isoformat()
+    if body.value is None or body.value == "":
+        it["client_value"] = None
+        it["status"] = "empty"
+    else:
+        it["client_value"] = body.value
+        it["status"] = "pending"
+        it["submitted_at"] = now
+    items[idx] = it
+    await db.intake_tokens.update_one(
+        {"token": token},
+        {"$set": {"items": items, "updated_at": now}},
+    )
+    return {"ok": True, "status": it["status"]}
+
+
+@api_router.post("/intake/{token}/upload")
+async def intake_client_upload(token: str, item_id: str = Form(...), file: UploadFile = File(...)):
+    """Cliente sube archivo (GridFS). Límite 10 MB. Queda en status 'pending'."""
+    rec = await _get_intake(token)
+    items = rec.get("items", [])
+    idx = next((i for i, it in enumerate(items) if it.get("id") == item_id), None)
+    if idx is None:
+        raise HTTPException(status_code=404, detail="Item no encontrado")
+    if not items[idx].get("requested"):
+        raise HTTPException(status_code=403, detail="Este item no fue solicitado")
+    # Leer contenido con límite
+    contents = await file.read(MAX_UPLOAD_BYTES + 1)
+    if len(contents) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"Archivo supera {MAX_UPLOAD_BYTES // 1024 // 1024} MB")
+    # Borrar fichero anterior si existía
+    old_id = items[idx].get("client_file_id")
+    if old_id:
+        try:
+            await _gridfs_bucket.delete(old_id)
+        except Exception:
+            pass
+    # Subir
+    file_id = await _gridfs_bucket.upload_from_stream(
+        file.filename or "unnamed",
+        contents,
+        metadata={"content_type": file.content_type, "token": token, "item_id": item_id},
+    )
+    now = datetime.now(timezone.utc).isoformat()
+    it = items[idx]
+    it["client_file_id"] = str(file_id)
+    it["client_file_name"] = file.filename
+    it["client_file_type"] = file.content_type
+    it["client_file_size"] = len(contents)
+    it["status"] = "pending"
+    it["submitted_at"] = now
+    items[idx] = it
+    await db.intake_tokens.update_one(
+        {"token": token},
+        {"$set": {"items": items, "updated_at": now}},
+    )
+    return {"ok": True, "file_id": str(file_id), "size": len(contents)}
+
+
+@api_router.get("/intake/file/{file_id}")
+async def intake_get_file(file_id: str):
+    """Descargar un fichero subido por el cliente (público via file_id no-enumerable)."""
+    from bson import ObjectId
+    try:
+        oid = ObjectId(file_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="file_id inválido")
+    try:
+        stream = await _gridfs_bucket.open_download_stream(oid)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Fichero no encontrado")
+    content_type = (stream.metadata or {}).get("content_type") or "application/octet-stream"
+    filename = stream.filename or "file"
+    async def _iter():
+        while True:
+            chunk = await stream.readchunk()
+            if not chunk:
+                break
+            yield chunk
+    return StreamingResponse(
+        _iter(),
+        media_type=content_type,
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
+
+
+@api_router.post("/intake/{token}/complete")
+async def intake_client_complete(token: str):
+    """Cliente marca como 'listo para revisar'. Dispara notificación Slack/Discord."""
+    rec = await _get_intake(token)
+    now = datetime.now(timezone.utc).isoformat()
+    await db.intake_tokens.update_one(
+        {"token": token},
+        {"$set": {"completed_at": now, "updated_at": now}},
+    )
+    # Notificar webhook del proyecto si está configurado
+    pid = rec["project_id"]
+    notify_config = await _read_storage(f"wa_editor:p:{pid}:notify_config") or {}
+    pending_count = sum(1 for it in rec.get("items", []) if it.get("status") == "pending")
+    projects = await _read_storage(PROJECTS_LIST_KEY) or []
+    project = next((p for p in projects if p.get("id") == pid), None)
+    project_name = (project or {}).get("name", pid)
+    text = f"✅ *WAFLOW · Intake completado*\nProyecto: *{project_name}*\nEl cliente ha marcado {pending_count} datos como listos para revisar."
+    for url_key, fmt in [("slack_url", "slack"), ("discord_url", "discord")]:
+        url = notify_config.get(url_key)
+        if not url:
+            continue
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as hc:
+                if fmt == "slack":
+                    await hc.post(url, json={"text": text})
+                else:
+                    await hc.post(url, json={"content": text})
+        except Exception:
+            pass
+    return {"ok": True, "pending_count": pending_count, "completed_at": now}
+
+
+@api_router.post("/intake/project/{project_id}/review")
+async def intake_agency_review(project_id: str, body: IntakeReviewBody):
+    """Agencia aprueba o rechaza un item pendiente. Si aprueba → aplica al proyecto."""
+    rec = await db.intake_tokens.find_one({"project_id": project_id})
+    if not rec:
+        raise HTTPException(status_code=404, detail="Intake no encontrado")
+    items = rec.get("items", [])
+    idx = next((i for i, it in enumerate(items) if it.get("id") == body.item_id), None)
+    if idx is None:
+        raise HTTPException(status_code=404, detail="Item no encontrado")
+    it = items[idx]
+    if it.get("status") != "pending":
+        raise HTTPException(status_code=400, detail=f"Item no está pending (status={it.get('status')})")
+    now = datetime.now(timezone.utc).isoformat()
+    if body.action == "reject":
+        it["status"] = "rejected"
+        it["review_comment"] = body.comment
+        it["reviewed_at"] = now
+    elif body.action == "approve":
+        it["status"] = "approved"
+        it["reviewed_at"] = now
+        # Aplicar al proyecto
+        if it.get("type") == "variable":
+            vars_key = f"wa_editor:p:{project_id}:vars"
+            vars_list = await _read_storage(vars_key) or []
+            vidx = next((i for i, v in enumerate(vars_list) if v.get("name") == it.get("key")), None)
+            if vidx is not None:
+                vars_list[vidx]["value"] = it.get("client_value") or ""
+            else:
+                vars_list.append({
+                    "name": it.get("key"),
+                    "value": it.get("client_value") or "",
+                    "category": it.get("section") or "Cliente",
+                    "editable": True,
+                })
+            await _write_storage(vars_key, vars_list)
+        elif it.get("type") == "creative" and it.get("client_file_id"):
+            creatives_key = f"wa_editor:p:{project_id}:creatives"
+            creatives = await _read_storage(creatives_key) or []
+            creatives.append({
+                "id": f"cli_{it['client_file_id']}",
+                "name": it.get("client_file_name") or it.get("label"),
+                "type": _detect_creative_type(it.get("client_file_type") or ""),
+                "url": f"/api/intake/file/{it['client_file_id']}",
+                "source": "client_intake",
+                "intake_item_id": it.get("id"),
+                "messageKey": None,
+            })
+            await _write_storage(creatives_key, creatives)
+    else:
+        raise HTTPException(status_code=400, detail="action debe ser 'approve' o 'reject'")
+    items[idx] = it
+    await db.intake_tokens.update_one(
+        {"project_id": project_id},
+        {"$set": {"items": items, "updated_at": now}},
+    )
+    return {"ok": True, "status": it["status"]}
+
+
+def _detect_creative_type(content_type: str) -> str:
+    ct = (content_type or "").lower()
+    if ct.startswith("image/gif"):
+        return "gif"
+    if ct.startswith("image/"):
+        return "image"
+    if ct.startswith("video/"):
+        return "video"
+    return "doc"
+
+
+# ============================================================
 # ROOT
 # ============================================================
 @api_router.get("/")

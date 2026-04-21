@@ -11,6 +11,7 @@ import {
 
 import { ConfirmProvider, useConfirm } from "./hooks/useConfirm";
 import PublicReviewPage from "./pages/PublicReviewPage";
+import PublicIntakePage from "./pages/PublicIntakePage";
 
 // === DATOS DEL EXCEL (importados desde data.js) ===
 import { RAW_DATA as RAW } from "./data.js";
@@ -4248,6 +4249,322 @@ function HistoryPanel({ history }) {
 
 
 // ====================================================================
+// INTAKE PANEL — checklist de datos y recursos que pedimos al cliente
+// Auto-detecta variables editables sin valor + mensajes con recursos sin creativo.
+// Agencia: seleccionar qué pedir, copiar link /intake/:token, revisar pending, aprobar/rechazar.
+// ====================================================================
+function IntakePanel({ projectId, projectName, vars, flows, creatives }) {
+  const API = useMemo(() => `${process.env.REACT_APP_BACKEND_URL}/api`, []);
+  const [token, setToken] = useState(null);
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [rejectState, setRejectState] = useState({}); // itemId -> { open, comment }
+
+  const autoSuggest = useMemo(() => {
+    const suggestions = [];
+    // 1) Variables editables sin valor
+    vars.forEach(v => {
+      if (!v.editable) return;
+      if (v.value && v.value.trim() !== "") return;
+      suggestions.push({
+        id: `var:${v.name}`,
+        type: "variable",
+        key: v.name,
+        label: v.name,
+        section: v.category || "Tu marca",
+        example: "",
+        help: `Variable ${v.name}. Se usará en los mensajes a tus leads.`,
+      });
+    });
+    // 2) Mensajes con "recursos" declarados pero sin creativo adjunto
+    flows.forEach(f => {
+      (f.items || []).forEach((m, idx) => {
+        const rec = (m.recursos || "").trim();
+        if (!rec || rec.toLowerCase() === "n/a") return;
+        const msgKey = `${f.key}:${m.id || idx}`;
+        const hasCreative = creatives.some(c => c.messageKey === msgKey);
+        if (hasCreative) return;
+        suggestions.push({
+          id: `cre:${msgKey}`,
+          type: "creative",
+          key: msgKey,
+          label: `${m.id || m.dia || idx} — ${rec.slice(0, 60)}`,
+          section: "Creativos",
+          help: `Para ${f.label}. Sube imagen, video o PDF (máx 10 MB).`,
+        });
+      });
+    });
+    return suggestions;
+  }, [vars, flows, creatives]);
+
+  // Cargar intake existente
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      try {
+        const r = await fetch(`${API}/intake/project/${projectId}`);
+        const data = await r.json();
+        if (data.exists) {
+          setToken(data.token);
+          setItems(data.items || []);
+        } else {
+          setToken(null);
+          // Pre-cargar con auto-sugeridos, todos marcados como requested
+          setItems(autoSuggest.map(s => ({ ...s, requested: true, status: "empty" })));
+        }
+      } catch (e) {
+        console.warn("intake load failed", e);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [projectId, API, autoSuggest]);
+
+  const persistItems = async (nextItems) => {
+    setSaving(true);
+    try {
+      if (!token) {
+        // Crear
+        const r = await fetch(`${API}/intake/create`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ project_id: projectId, items: nextItems }),
+        });
+        const data = await r.json();
+        if (r.ok) setToken(data.token);
+      } else {
+        await fetch(`${API}/intake/project/${projectId}/items`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ items: nextItems }),
+        });
+      }
+    } catch (e) {
+      console.warn("intake persist failed", e);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const toggleRequested = (itemId) => {
+    const next = items.map(it => it.id === itemId ? { ...it, requested: !it.requested } : it);
+    setItems(next);
+    persistItems(next);
+  };
+
+  const addAllSuggested = () => {
+    const existingIds = new Set(items.map(i => i.id));
+    const toAdd = autoSuggest.filter(s => !existingIds.has(s.id)).map(s => ({ ...s, requested: true, status: "empty" }));
+    const next = items.concat(toAdd).map(i =>
+      autoSuggest.some(s => s.id === i.id) ? { ...i, requested: true } : i
+    );
+    setItems(next);
+    persistItems(next);
+  };
+
+  const reviewItem = async (itemId, action, comment) => {
+    try {
+      const r = await fetch(`${API}/intake/project/${projectId}/review`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ item_id: itemId, action, comment: comment || null }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || "Error");
+      setItems(prev => prev.map(it => it.id === itemId ? { ...it, status: data.status, review_comment: action === "reject" ? (comment || null) : it.review_comment } : it));
+      setRejectState(s => ({ ...s, [itemId]: { open: false, comment: "" } }));
+    } catch (e) {
+      alert("No se pudo " + (action === "approve" ? "aprobar" : "rechazar") + ": " + e.message);
+    }
+  };
+
+  const intakeUrl = token ? `${window.location.origin}/intake/${token}` : "";
+  const copyIntakeLink = async () => {
+    if (!intakeUrl) return;
+    try { await navigator.clipboard.writeText(intakeUrl); } catch {
+      const ta = document.createElement("textarea"); ta.value = intakeUrl; document.body.appendChild(ta); ta.select(); document.execCommand("copy"); document.body.removeChild(ta);
+    }
+    alert("Link copiado al portapapeles");
+  };
+
+  const requested = items.filter(i => i.requested);
+  const pending = requested.filter(i => i.status === "pending");
+  const approved = requested.filter(i => i.status === "approved");
+  const rejected = requested.filter(i => i.status === "rejected");
+  const empty = requested.filter(i => !i.status || i.status === "empty");
+
+  if (loading) {
+    return <div className="text-sm text-stone-500">Cargando checklist...</div>;
+  }
+
+  return (
+    <div className="space-y-5 max-w-4xl" data-testid="intake-panel">
+      <div>
+        <h2 className="text-lg font-bold text-stone-900">Checklist del cliente</h2>
+        <p className="text-xs text-stone-500 mt-0.5">Todo lo que necesitamos del cliente: variables de texto + creativos. Genera un link público, se lo pasas al cliente, y él rellena con auto-guardado.</p>
+      </div>
+
+      {/* Stats */}
+      <div className="grid grid-cols-4 gap-3">
+        <div className="bg-white border border-stone-200 rounded-lg p-3">
+          <div className="text-[10px] uppercase tracking-widest text-stone-500">Solicitados</div>
+          <div className="text-2xl font-bold text-stone-900 mt-1" data-testid="intake-count-requested">{requested.length}</div>
+        </div>
+        <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+          <div className="text-[10px] uppercase tracking-widest text-amber-700">En revisión</div>
+          <div className="text-2xl font-bold text-amber-900 mt-1" data-testid="intake-count-pending">{pending.length}</div>
+        </div>
+        <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3">
+          <div className="text-[10px] uppercase tracking-widest text-emerald-700">Aprobados</div>
+          <div className="text-2xl font-bold text-emerald-900 mt-1" data-testid="intake-count-approved">{approved.length}</div>
+        </div>
+        <div className="bg-stone-100 border border-stone-200 rounded-lg p-3">
+          <div className="text-[10px] uppercase tracking-widest text-stone-500">Pendientes de enviar</div>
+          <div className="text-2xl font-bold text-stone-700 mt-1">{empty.length}</div>
+        </div>
+      </div>
+
+      {/* Link público */}
+      <div className="bg-gradient-to-br from-indigo-600 to-violet-700 rounded-xl p-5 text-white">
+        <div className="flex items-center gap-2 mb-2">
+          <Share2 size={16} />
+          <div className="text-[11px] uppercase tracking-widest opacity-75">Link público para tu cliente</div>
+        </div>
+        {token && intakeUrl ? (
+          <>
+            <div className="font-mono text-[11.5px] bg-white/10 rounded p-2 break-all mb-2" data-testid="intake-url">{intakeUrl}</div>
+            <div className="flex gap-2 flex-wrap">
+              <button onClick={copyIntakeLink} data-testid="intake-copy-btn"
+                className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-semibold bg-white text-indigo-700 rounded-md hover:bg-indigo-50">
+                <Copy size={13} /> Copiar link
+              </button>
+              <a href={intakeUrl} target="_blank" rel="noreferrer"
+                className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-semibold bg-white/10 border border-white/30 rounded-md hover:bg-white/20">
+                <ExternalLink size={13} /> Abrir vista cliente
+              </a>
+            </div>
+          </>
+        ) : (
+          <div className="text-[12.5px] opacity-90">
+            Marca abajo qué vas a pedirle al cliente y se generará el link automáticamente al guardar.
+          </div>
+        )}
+      </div>
+
+      {/* Pending review (destacado) */}
+      {pending.length > 0 && (
+        <div className="bg-amber-50 border-2 border-amber-300 rounded-xl p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <AlertTriangle size={16} className="text-amber-700" />
+            <div className="font-bold text-amber-900 text-sm">{pending.length} {pending.length === 1 ? "dato pendiente de revisar" : "datos pendientes de revisar"}</div>
+          </div>
+          <div className="space-y-2">
+            {pending.map(it => {
+              const rej = rejectState[it.id] || {};
+              return (
+                <div key={it.id} className="bg-white border border-amber-200 rounded-lg p-3" data-testid={`intake-pending-${it.id}`}>
+                  <div className="flex items-baseline justify-between gap-2 mb-1 flex-wrap">
+                    <div className="text-[11.5px] text-amber-700 font-semibold uppercase tracking-widest">{it.section}</div>
+                    <div className="text-[10px] text-stone-500">
+                      {it.submitted_at ? `Enviado ${new Date(it.submitted_at).toLocaleString("es-ES")}` : ""}
+                    </div>
+                  </div>
+                  <div className="text-sm font-semibold text-stone-900 mb-1">{it.label}</div>
+                  {it.type === "variable" ? (
+                    <div className="text-[13px] bg-stone-50 border border-stone-200 rounded p-2 font-mono whitespace-pre-wrap text-stone-800">
+                      {it.client_value || "(vacío)"}
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2 bg-stone-50 border border-stone-200 rounded p-2">
+                      <div className="text-xl">📎</div>
+                      <a href={`${API}/intake/file/${it.client_file_id}`} target="_blank" rel="noreferrer"
+                        className="flex-1 min-w-0 text-[12px] font-medium text-indigo-700 truncate hover:underline">
+                        {it.client_file_name || "archivo"}
+                      </a>
+                      <span className="text-[10px] text-stone-500">{it.client_file_size ? `${(it.client_file_size / 1024).toFixed(0)} KB` : ""}</span>
+                    </div>
+                  )}
+                  <div className="flex items-center gap-2 mt-2 flex-wrap">
+                    <button onClick={() => reviewItem(it.id, "approve")}
+                      data-testid={`intake-approve-${it.id}`}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-emerald-600 text-white rounded-md hover:bg-emerald-700">
+                      <Check size={12} /> Aprobar y aplicar
+                    </button>
+                    {!rej.open ? (
+                      <button onClick={() => setRejectState(s => ({ ...s, [it.id]: { open: true, comment: "" } }))}
+                        data-testid={`intake-reject-open-${it.id}`}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-white border border-red-300 text-red-700 rounded-md hover:bg-red-50">
+                        <X size={12} /> Rechazar
+                      </button>
+                    ) : (
+                      <div className="flex items-center gap-1.5 w-full">
+                        <input value={rej.comment || ""} onChange={e => setRejectState(s => ({ ...s, [it.id]: { ...s[it.id], comment: e.target.value } }))}
+                          placeholder="Motivo (ej: el logo no se ve bien en fondo oscuro)"
+                          className="flex-1 px-2 py-1 text-[12px] border border-red-200 rounded" />
+                        <button onClick={() => reviewItem(it.id, "reject", rej.comment)}
+                          data-testid={`intake-reject-confirm-${it.id}`}
+                          className="px-3 py-1.5 text-xs font-semibold bg-red-600 text-white rounded-md hover:bg-red-700">Enviar rechazo</button>
+                        <button onClick={() => setRejectState(s => ({ ...s, [it.id]: { open: false, comment: "" } }))}
+                          className="text-xs text-stone-500 hover:text-stone-900">Cancelar</button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Checklist completo */}
+      <div className="bg-white border border-stone-200 rounded-lg p-5">
+        <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
+          <div className="font-semibold text-stone-900 text-sm">Qué pedirle al cliente</div>
+          <button onClick={addAllSuggested} data-testid="intake-add-all-btn"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-stone-900 text-white rounded-md hover:bg-stone-700">
+            <Plus size={12} /> Añadir todo lo auto-detectado ({autoSuggest.length})
+          </button>
+        </div>
+        <div className="text-[11px] text-stone-500 mb-3">
+          Marca/desmarca cada item. Al guardar se genera/actualiza el link público. {saving && <span className="text-amber-700">Guardando...</span>}
+        </div>
+        {items.length === 0 ? (
+          <div className="text-[12px] text-stone-500 py-4 text-center">
+            No hay sugerencias: todas tus variables editables tienen valor y todos los mensajes con recursos tienen creativo. Puedes añadir items custom manualmente en futuras versiones.
+          </div>
+        ) : (
+          <div className="space-y-1.5">
+            {items.map(it => (
+              <label key={it.id} className="flex items-center gap-3 px-2 py-1.5 rounded hover:bg-stone-50 cursor-pointer"
+                data-testid={`intake-toggle-${it.id}`}>
+                <input type="checkbox" checked={!!it.requested} onChange={() => toggleRequested(it.id)}
+                  className="w-4 h-4 accent-stone-900" />
+                <div className="flex-1 min-w-0">
+                  <div className="text-[13px] text-stone-900 truncate">
+                    {it.type === "creative" ? "🎨 " : ""}{it.label}
+                  </div>
+                  <div className="text-[10.5px] text-stone-500 truncate">{it.section} · {it.type}</div>
+                </div>
+                {it.status && it.status !== "empty" && (
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full border ${
+                    it.status === "approved" ? "bg-emerald-50 border-emerald-200 text-emerald-800"
+                    : it.status === "pending" ? "bg-amber-50 border-amber-200 text-amber-800"
+                    : "bg-red-50 border-red-200 text-red-800"
+                  }`}>{it.status}</span>
+                )}
+              </label>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+
+// ====================================================================
 // PROJECT WORKSPACE — todo el editor de un proyecto
 // ====================================================================
 function ProjectWorkspace({ project, onBack, me, onUpdateProject }) {
@@ -4569,6 +4886,7 @@ function ProjectWorkspace({ project, onBack, me, onUpdateProject }) {
     { key: "creatives", label: "Creativos", icon: ImageIcon },
     { key: "monitoring", label: "Salud", icon: Activity },
     { key: "client", label: "Panel cliente", icon: Share2 },
+    { key: "intake", label: "Checklist cliente", icon: ClipboardCheck },
     { key: "snapshots", label: "Versiones", icon: GitBranch },
     { key: "history", label: "Historial", icon: History },
     { key: "connections", label: "Conexiones", icon: Plug },
@@ -4711,6 +5029,7 @@ function ProjectWorkspace({ project, onBack, me, onUpdateProject }) {
         {activeTab === "creatives" && <main className="flex-1 min-w-0 px-8 py-8"><CreativesPanel creatives={creatives} setCreatives={setCreatives} allMessages={allMessages} /></main>}
         {activeTab === "monitoring" && <main className="flex-1 min-w-0 px-8 py-8"><MonitoringPanel flows={FLOWS} projectId={project.id} /></main>}
         {activeTab === "client" && <main className="flex-1 min-w-0 px-8 py-8"><ClientReviewPanel flows={FLOWS} vars={vars} edits={edits} approvalByMsg={approvalByMsg} onSetApproval={setApproval} me={me} projectName={project.name} projectId={project.id} /></main>}
+        {activeTab === "intake" && <main className="flex-1 min-w-0 px-8 py-8"><IntakePanel projectId={project.id} projectName={project.name} vars={vars} flows={FLOWS} creatives={creatives} /></main>}
         {activeTab === "snapshots" && <main className="flex-1 min-w-0 px-8 py-8"><SnapshotsPanel snapshots={snapshots} onCreate={createSnapshot} onRestore={restoreSnapshot} onDelete={deleteSnapshot} /></main>}
         {activeTab === "history" && <main className="flex-1 min-w-0 px-8 py-8"><HistoryPanel history={history} /></main>}
         {activeTab === "connections" && <main className="flex-1 min-w-0 px-8 py-8"><ConnectionsPanel conn={connections} setConn={setConnections} projectName={project.name} notifyConfig={notifyConfig} setNotifyConfig={setNotifyConfig} /></main>}
@@ -4837,14 +5156,16 @@ function MainApp() {
   );
 }
 
-// Router manual: /review/:token → PublicReviewPage, resto → MainApp
+// Router manual: /review/:token → PublicReviewPage, /intake/:token → PublicIntakePage, resto → MainApp
 export default function App() {
-  const reviewMatch = typeof window !== "undefined"
-    ? window.location.pathname.match(/^\/review\/([A-Za-z0-9_-]+)\/?$/)
-    : null;
+  const path = typeof window !== "undefined" ? window.location.pathname : "";
+  const reviewMatch = path.match(/^\/review\/([A-Za-z0-9_-]+)\/?$/);
+  const intakeMatch = path.match(/^\/intake\/([A-Za-z0-9_-]+)\/?$/);
   return (
     <ConfirmProvider>
-      {reviewMatch ? <PublicReviewPage token={reviewMatch[1]} /> : <MainApp />}
+      {reviewMatch ? <PublicReviewPage token={reviewMatch[1]} />
+        : intakeMatch ? <PublicIntakePage token={intakeMatch[1]} />
+        : <MainApp />}
     </ConfirmProvider>
   );
 }

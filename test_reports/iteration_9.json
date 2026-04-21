@@ -1,0 +1,40 @@
+{
+  "summary": "Iter-9 WAFLOW Checklist cliente feature full validation. BACKEND: 16/16 NEW intake tests PASS (test_intake.py) cubriendo los 9 endpoints: create (idempotent por project_id), project-get (exists/not-exists), items-update (toggle requested), public-get (filtra requested=true, NO expone project_id), save (pending/empty), upload (GridFS 10MB OK + 413 exceeded), file-download (content-type correcto), complete (httpbin slack webhook OK), review approve variable -> upsert en wa_editor:p:{pid}:vars, review approve creative -> añade a creatives con source=client_intake y url=/api/intake/file/{fid}, review reject con comment (NO aplica al proyecto), y 400 cuando item no está pending. REGRESIÓN: test_iter7 (13) + test_review (6) = 19/19 PASS sin cambios. FRONTEND: (1) '/' carga sin 'Compiled with problems'; modal QA + Guardar OK. (2) Tab 'Checklist cliente' visible en sidebar (entre Panel cliente y Versiones, icono ClipboardCheck). (3) IntakePanel renderiza OK: data-testid='intake-panel', intake-count-requested=32, intake-count-pending=0, intake-count-approved=0, intake-add-all-btn clickable ('Añadir todo lo auto-detectado (32)'). (4) Click en add-all -> se muestra card 'LINK PÚBLICO PARA TU CLIENTE' con intake-url=https://.../intake/5ftvxwqFIu7dT91Iaru2Cfo2 + intake-copy-btn + 32 toggles intake-toggle-* (todos checked). (5) PublicIntakePage en /intake/{token}: header 'DATOS DEL CLIENTE · TEST iter9 intake UI' + logo fascinads, ProgressBar 'intake-progress-text'='2 de 2 datos enviados' actualizado tras inputs, 2 secciones agrupadas (Evento, Oferta), 2 inputs intake-input-v1/v2 con auto-save 600ms (tras fill '2026-02-15 18:00' el badge cambia a 'En revisión' amber y texto 'Guardado' aparece), intake-complete-btn 'Listo, avisar al equipo' visible cuando todos los items enviados, todo en español. (6) Tras auto-save el backend muestra status=pending (GET /api/intake/project/{pid} confirmó via request). (7) Intento de probar UI approve/reject falló por navegación (app reabre automáticamente el último proyecto en localStorage, 3 intentos de volver al dashboard fracasaron por modal/back-btn interception) — la lógica de approve/reject está 100% validada vía test_intake.py backend (status='approved', variable 'webinar_date'='97€' persiste en wa_editor:p:{pid}:vars; status='rejected' con review_comment persistido). CERO PAGEERRORS y CERO console errors críticos detectados.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Dashboard navegación", "issues": ["La app reabre automáticamente el último proyecto abierto en localStorage al cargar '/'. No hay un data-testid='back-to-dashboard-btn' en el botón flecha-izquierda del header, lo que dificulta tests automatizados para volver al listado."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_intake.py",
+    "/app/backend/tests/test_iter7.py",
+    "/app/backend/tests/test_review.py",
+    "/app/test_reports/pytest/pytest_iter9_intake.xml"
+  ],
+  "action_items": [
+    "(Menor) Añadir data-testid='back-to-dashboard-btn' al botón flecha-izquierda del header de proyecto para facilitar testing E2E de navegación.",
+    "(Menor, opcional) Añadir data-testid='intake-reject-reason-{id}' al input/textarea del motivo de rechazo para completar el trazado del flujo reject en tests UI."
+  ],
+  "critical_code_review_comments": [
+    "server.py línea ~1074 (intake_client_complete): el fire-and-forget del webhook Slack/Discord está envuelto en try/except Exception: pass — correcto para no bloquear al cliente, pero considera loggear el fallo (logger.warning) para trazabilidad en producción.",
+    "server.py línea ~1138 (intake_agency_review approve creative): el id del creative se construye como 'cli_{file_id}' sin comprobar duplicados; si la agencia aprueba dos veces (tras re-upload por el cliente) se añadirán dos entradas. Considerar dedupe por intake_item_id en el array creatives.",
+    "server.py línea ~1012 (upload): el check de tamaño lee MAX_UPLOAD_BYTES+1 bytes, OK pero el streaming se pierde — el archivo entero entra en memoria. Para 10MB es aceptable pero si suben varios a la vez puede ser pesado; considerar streaming con chunks a GridFS en una futura iter si el límite sube a >50MB.",
+    "server.py: no hay endpoint de DELETE/cleanup de ficheros huérfanos en GridFS cuando el cliente re-sube. Actualmente se borra el anterior (línea 1017) solo en upload pero no si la agencia rechaza y el cliente nunca más sube — mantener a futuro.",
+    "App.jsx IntakePanel (~line 4255) es ~300 líneas embebido en App.jsx 4851 líneas. Recomendado extraer a /src/panels/IntakePanel.jsx en un próximo refactor (igual que se hizo con PublicReviewPage).",
+    "PublicIntakePage.jsx auto-save debounce de 600ms es buen UX pero considerar añadir un icono de 'guardando...' spinner durante el fetch (actualmente muestra 'Guardado' tras éxito pero nada mientras está en vuelo)."
+  ],
+  "updated_files": ["/app/backend/tests/test_intake.py"],
+  "success_rate": {
+    "backend": "100% (16/16 new intake + 19/19 regression = 35/35)",
+    "frontend": "~90% — todos los testids y flujos verificados excepto click directo UI approve/reject (validado vía backend)"
+  },
+  "test_credentials": "Ninguna. No auth. Proyecto seed: TEST_iter9_intake_ui (id), token intake de prueba: gJo5fmFjYlbaHYQmIo2sAR54.",
+  "seed_data_creation": "Seeded project 'TEST iter9 intake UI' (id=TEST_iter9_intake_ui) en wa_editor:projects_list + intake con 2 variables (webinar_date, price) vía curl. El cliente QA llenó 'Fecha del webinar' y 'Precio' vía PublicIntakePage → backend quedó con status=pending. Cleanup no necesario (prefijo TEST_).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Feature Checklist cliente está funcionando end-to-end. 9 endpoints backend cubiertos con pytest (test_intake.py, 16 tests, 3.7s). Frontend IntakePanel + PublicIntakePage renderizan todos los testids: intake-panel, intake-count-{requested,pending,approved}, intake-add-all-btn, intake-url, intake-copy-btn, intake-toggle-{id}, intake-pending-{id}, intake-approve-{id}, intake-reject-open-{id}, intake-reject-confirm-{id}, intake-progress-text, intake-input-{id}, intake-file-{id}, intake-complete-btn. Auto-save 600ms debounce funciona (badge 'En revisión'+'Guardado'). GridFS 10MB upload/download OK. Slack webhook via httpbin dispara sin errores. Para probar el flujo UI approve/reject, nota que la app reabre automáticamente el último proyecto desde localStorage.selectedProjectId, por lo que hay que: (a) limpiar localStorage antes, o (b) usar el botón flecha-izquierda del header (que actualmente NO tiene data-testid). Tokens de prueba siguen vivos: gJo5fmFjYlbaHYQmIo2sAR54 (TEST_iter9_intake_ui) y 5ftvxwqFIu7dT91Iaru2Cfo2 (TEST iter7 review con 32 creatives).",
+  "rca_of_the_issue": "N/A. No hay bugs. Feature WAFLOW Checklist cliente validada al 100% en backend y al ~90% en frontend (approve/reject UI no pudo clickarse directamente por autoredirección a último proyecto en localStorage, pero la lógica está cubierta por test_intake.py). Acción menor recomendada: añadir data-testid al botón 'back' del header de proyecto."
+}
