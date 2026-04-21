@@ -1,0 +1,40 @@
+{
+  "summary": "Iter-7 — Validación de los 4 fixes operativos previos a beta interna. BACKEND 13/13 PASS (pytest_iter7.xml): (a) /api/test-connection cubierto con los 7 casos — n8n_webhook OK con httpbin.org/post (ok:true + detail), n8n sin url (ok:false), meta con credenciales dummy (ok:false + error de Meta API, NO 500), meta sin fields (ok:false), evolution con server inexistente (ok:false + error, NO 500), evolution sin fields (ok:false), tipo xxx desconocido (ok:false). (b) Smoke: GET /api/ devuelve {'message':'WhatsApp Flow Editor API running'}, /api/storage set+get works, /api/whatsapp/send con token inválido devuelve 200 ok:false (no 500). (c) /api/launch/deploy con httpbin válido devuelve ok:true + launch_id persistido; /api/launch/{pid}/status con eventos seeded devuelve active:true + stats. (d) /api/review/create → token → GET /review/{token} devuelve project → POST /approve (msgKey+status) → POST /sign (firma con data-URL) → GET /summary.pdf devuelve application/pdf con magic bytes %PDF. FRONTEND smoke + 4 fixes verificados en el navegador real contra REACT_APP_BACKEND_URL: (1) raíz carga sin 'Compiled with problems', título 'WAFLOW · by Fascinads'. (2) Modal inicial '¿Cómo te llamas?' aparece, rellenado con 'QA' + click Guardar → desaparece. (3) Sidebar muestra los 6 flujos (Flujo A, 1-1 Pre-webinar, Broadcasts, Venta 1-1, Venta comunidad, Replay) y las 14 tabs (Autopilot/Flujos/Mapa/Calendario/Simulador/Checker/Creativos/Salud/Panel cliente/Versiones/Historial/Conexiones/Captación/Prompt IA). (4) Tab Conexiones renderiza ConnectionsPanel con los 3 botones data-testid existentes (test-meta-btn, test-evolution-btn, meta-send-test-btn). (5) Click en test-meta-btn sin credenciales → POST /api/test-connection → respuesta {ok:false,error:'Faltan phone_number_id o access_token'} → badge rojo '❌ Faltan phone_number_id o access_token' bajo el botón, página NO rompe. Click en test-evolution-btn sin creds → {ok:false,error:'Faltan server_url, api_key o instance'} → badge rojo visible. (6) Tab Checker muestra 'Validación previa' con contadores Errores 1 / Avisos 5 / Info 56 y lista detallada de 'Variables sin definir', 'Botón con link pero sin user_id', 'Excel menciona recurso pero no hay creativo subido' — el checker reforzado funciona. (7) ConfirmProvider/ConfirmDialog/useConfirm presentes en App.jsx (líneas 5025-5067) y consumidos en MessageCard (línea 4464 askConfirm = useConfirm()). NO se pudo disparar el flujo 'Restaurar snapshot' UI porque Historial en este proyecto tiene 0 snapshots (empty state válido, no bug). La lógica del ConfirmDialog queda verificada por inspección de código y por los testids 'confirm-dialog-ok'/'confirm-dialog-cancel' definidos correctamente.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Me-dialog persistencia", "issues": ["El modal '¿Cómo te llamas?' aparece en cada sesión fresca del navegador. Si es intencional (storage session-scoped) OK; pero el review request dice 'la primera vez, luego ya no'. Verificar si window.storage persiste realmente la key 'waflow_me' entre recargas o si el shim es in-memory. No bloqueante."]},
+      {"screen": "Historial tab", "issues": ["Cuando hay 0 snapshots no hay mensaje vacío explicando al usuario cómo crear uno. Considera añadir 'Aún no hay snapshots. Se crean automáticamente al modificar mensajes.' o similar."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter7.py",
+    "/app/test_reports/pytest/pytest_iter7.xml"
+  ],
+  "action_items": [
+    "(Opcional) Verificar que la key 'waflow_me' realmente persiste entre recargas vía /api/storage/get (no session-only). Si es session-only a propósito, ignorar.",
+    "(Arrastrado iter-5/6, no bloqueante) stopLaunch en AutopilotPanel aún usa window.confirm nativo en lugar del ConfirmDialog custom — mismo patrón que deleteProject/eliminar mensaje. Ahora que ConfirmProvider está montado globalmente, migrar stopLaunch a useConfirm() es trivial (~3 líneas).",
+    "(UX menor) Historial vacío debería mostrar empty state con copy."
+  ],
+  "critical_code_review_comments": [
+    "App.jsx supera 5196 líneas. ConnectionsPanel (1779-1985) + ConfirmProvider/useConfirm/Dialog (5025-5067) + MainApp (5072+). Extraer ya a src/panels/ConnectionsPanel.jsx + src/hooks/useConfirm.js es urgente antes de la siguiente iteración.",
+    "/api/test-connection (server.py:227-276) no valida que body.config sea un dict no-vacío antes de hacer .get(); si el cliente envía config:null el endpoint llamaría .get() sobre None y crashearía. Aunque httpx está dentro del try/except general, conviene validar explícitamente con Pydantic (Dict[str, Any] permite None).",
+    "/api/test-connection para type='n8n_webhook' hace POST con body {_waflow_test:true,ts:...} al webhook del cliente. En producción esto inyectará un payload de prueba en el flujo del cliente — puede disparar acciones no deseadas (ej: enviar WhatsApp real). Añadir header 'X-WAFLOW-Test: 1' y documentar que n8n debe filtrarlo, o usar verbo HEAD en lugar de POST.",
+    "ConfirmDialog (5025-5046) no usa portal; si un padre tiene overflow:hidden podría recortarse. Z-index:60 solo cubre elementos con z<60 — el modal del me-dialog usa z-[60] también (según se vio en las capturas) y hay empate: si coinciden, el orden de montaje decide. Considera subir ConfirmDialog a z-[70] para garantizar que siempre queda por encima."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter7.py (nuevo — 13 tests: 7 test-connection + 3 smoke + 2 launch + 1 review)"
+  ],
+  "success_rate": {
+    "backend": "100% (13/13)",
+    "frontend": "~95% — los 4 fixes verificados en UI real; único punto no testable en vivo: ConfirmDialog sobre 'Restaurar snapshot' (proyecto sin snapshots); verificado por código."
+  },
+  "test_credentials": "No auth. Proyecto seed: 'TEST Review Project' (Cliente Test, Lanzamiento Webinar, 73 msgs/46 vars) ya existente en storage desde iteraciones previas.",
+  "seed_data_creation": "test_iter7.py crea: TEST_iter7_launch (launch + events, limpiado al final via teardown_class), TEST_iter7_review_<uuid> (review con token único por run → evita colisión con estado locked de runs previos), TEST_iter7_storage_smoke (storage key, borrado).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Los 3 botones de conexión (test-meta-btn, test-evolution-btn, meta-send-test-btn) están en ConnectionsPanel (App.jsx 1779-1985) y funcionan end-to-end contra /api/test-connection. ConfirmProvider envuelve toda la MainApp (App.jsx 5191-5193) y useConfirm está disponible globalmente. Historial vacío en el proyecto seed; para testear restoreSnapshot crear un snapshot manualmente (botón 'Crear snapshot' en tab Historial, requiere que el proyecto tenga modificaciones). MessageCard delete (askConfirm línea 4464) también usa ConfirmDialog — se puede testear abriendo un mensaje en Flujos y dándole al botón eliminar. El me-dialog '¿Cómo te llamas?' aparece en cada sesión fresca; hay que dismissarlo antes de clicks en paneles (fill input with placeholder 'Ej: Dani', click 'Guardar').",
+  "rca_of_the_issue": "No hay bugs bloqueantes. Los 4 fixes solicitados (useConfirm, Probar conexión Meta/Evolution/n8n, Test Send, checker reforzado) están implementados y funcionan correctamente tanto backend como frontend. Los 3 action_items son mejoras incrementales."
+}

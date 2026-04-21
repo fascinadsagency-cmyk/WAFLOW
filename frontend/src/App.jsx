@@ -1806,26 +1806,26 @@ function ConnectionsPanel({ conn, setConn, projectName, notifyConfig, setNotifyC
       </div>
     );
   };
-  const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState(null);
+  const [sendingMsg, setSendingMsg] = useState(false);
+  const [sendMsgResult, setSendMsgResult] = useState(null);
   const [testPhone, setTestPhone] = useState("");
   const [testMsg, setTestMsg] = useState("Mensaje de prueba ✅");
 
   const update = (k, v) => setConn({ ...conn, [k]: v });
 
   const sendTest = async () => {
-    if (!conn.phoneNumberId || !conn.accessToken || !testPhone) { setTestResult({ ok: false, msg: "Faltan: Phone Number ID, Access Token o teléfono" }); return; }
-    setTesting(true); setTestResult(null);
+    if (!conn.phoneNumberId || !conn.accessToken || !testPhone) { setSendMsgResult({ ok: false, msg: "Faltan: Phone Number ID, Access Token o teléfono" }); return; }
+    setSendingMsg(true); setSendMsgResult(null);
     try {
       const r = await fetch(`https://graph.facebook.com/v21.0/${conn.phoneNumberId}/messages`, {
         method: "POST", headers: { "Authorization": `Bearer ${conn.accessToken}`, "Content-Type": "application/json" },
         body: JSON.stringify({ messaging_product: "whatsapp", to: testPhone.replace(/\D/g, ""), type: "text", text: { body: testMsg } })
       });
       const data = await r.json();
-      if (r.ok) setTestResult({ ok: true, msg: `✓ Enviado. ID: ${data.messages?.[0]?.id || "?"}` });
-      else setTestResult({ ok: false, msg: `Error ${r.status}: ${data.error?.message || "desconocido"}` });
-    } catch (e) { setTestResult({ ok: false, msg: "Red: " + e.message }); }
-    setTesting(false);
+      if (r.ok) setSendMsgResult({ ok: true, msg: `✓ Enviado. ID: ${data.messages?.[0]?.id || "?"}` });
+      else setSendMsgResult({ ok: false, msg: `Error ${r.status}: ${data.error?.message || "desconocido"}` });
+    } catch (e) { setSendMsgResult({ ok: false, msg: "Red: " + e.message }); }
+    setSendingMsg(false);
   };
 
   const exportEnv = () => {
@@ -1969,10 +1969,10 @@ function ConnectionsPanel({ conn, setConn, projectName, notifyConfig, setNotifyC
             <textarea value={testMsg} onChange={e => setTestMsg(e.target.value)} className="w-full mt-1 px-2.5 py-1.5 text-sm border border-stone-200 rounded-md min-h-[70px]" />
           </div>
           <div className="flex items-center gap-3">
-            <button onClick={sendTest} disabled={testing} className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium bg-stone-900 text-white rounded-md disabled:opacity-50">
-              <Send size={14} /> {testing ? "Enviando..." : "Enviar"}
+            <button onClick={sendTest} disabled={sendingMsg} data-testid="meta-send-test-btn" className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium bg-stone-900 text-white rounded-md disabled:opacity-50">
+              <Send size={14} /> {sendingMsg ? "Enviando..." : "Enviar"}
             </button>
-            {testResult && <div className={`text-xs ${testResult.ok ? "text-emerald-700" : "text-red-700"}`}>{testResult.msg}</div>}
+            {sendMsgResult && <div className={`text-xs ${sendMsgResult.ok ? "text-emerald-700" : "text-red-700"}`}>{sendMsgResult.msg}</div>}
           </div>
           <div className="text-[11px] text-stone-500">⚠️ Meta requiere ventana 24h activa o template aprobada.</div>
         </div>
@@ -5177,23 +5177,6 @@ function MainApp() {
         danger={confirmDialog?.danger}
         onConfirm={confirmDialog?.onConfirm}
         onCancel={() => setConfirmDialog(null)}
-      />
-    </>
-  );
-}
-
-// Router manual: /review/:token → PublicReviewPage, resto → MainApp
-export default function App() {
-  const reviewMatch = typeof window !== "undefined"
-    ? window.location.pathname.match(/^\/review\/([A-Za-z0-9_-]+)\/?$/)
-    : null;
-  return (
-    <ConfirmProvider>
-      {reviewMatch ? <PublicReviewPage token={reviewMatch[1]} /> : <MainApp />}
-    </ConfirmProvider>
-  );
-}
-irmDialog(null)}
       />
     </>
   );
