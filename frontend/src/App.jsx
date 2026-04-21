@@ -397,6 +397,73 @@ function WhatsAppPreview({ msg, vars, onClose, variant = null }) {
 
 
 // ====================================================================
+// NEW MESSAGE MODAL — crear mensaje custom que se refleja en flujos/mapa/calendario
+// ====================================================================
+function NewMessageModal({ flow, defaultPosition, onSave, onClose }) {
+  const [draft, setDraft] = useState({
+    dia: "",
+    timing: "",
+    hora: "",
+    objetivo: "",
+    copy: "",
+    botones: "",
+    position: typeof defaultPosition === "number" ? defaultPosition : undefined,
+  });
+
+  const save = () => {
+    if (!draft.copy.trim()) { alert("El copy es obligatorio"); return; }
+    onSave(draft);
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-2xl max-w-xl w-full overflow-hidden flex flex-col max-h-[90vh]" onClick={e => e.stopPropagation()}>
+        <div className="px-5 py-3 border-b border-stone-200 flex items-center gap-2">
+          <Plus size={16} />
+          <div className="font-bold text-stone-900 text-sm">Nuevo mensaje custom en <span style={{ color: flow.color }}>{flow.label}</span></div>
+          <button onClick={onClose} className="ml-auto text-stone-500 hover:text-stone-900"><X size={16} /></button>
+        </div>
+        <div className="p-5 space-y-3 overflow-y-auto">
+          <div className="grid grid-cols-3 gap-2">
+            <Field label="ID / Día (ej M7 o D8)" value={draft.dia} onChange={v => setDraft({ ...draft, dia: v })} placeholder="M7" />
+            <Field label="Timing" value={draft.timing} onChange={v => setDraft({ ...draft, timing: v })} placeholder="T+3h" />
+            <Field label="Hora" value={draft.hora} onChange={v => setDraft({ ...draft, hora: v })} placeholder="10:30" />
+          </div>
+          <Field label="Objetivo" value={draft.objetivo} onChange={v => setDraft({ ...draft, objetivo: v })} placeholder="Recordatorio del webinar" full />
+          <div>
+            <label className="text-[11px] font-medium text-stone-600">Copy (puedes usar variables como {"{NOMBRE}"})</label>
+            <textarea value={draft.copy} onChange={e => setDraft({ ...draft, copy: e.target.value })}
+              placeholder="Hola {NOMBRE}, mañana a las 19h te espero..."
+              className="w-full mt-1 px-2.5 py-2 text-sm border border-stone-200 rounded-md min-h-[120px] focus:outline-none focus:border-stone-900 font-mono" />
+          </div>
+          <Field label="Botones (opcional, separados por ; o líneas)" value={draft.botones}
+            onChange={v => setDraft({ ...draft, botones: v })} placeholder="Sí, quiero ir; Recuérdame después" mono full />
+          <div>
+            <label className="text-[11px] font-medium text-stone-600">Posición en el flujo (opcional)</label>
+            <input type="number" min="0" max={flow.items.length} value={draft.position ?? ""}
+              onChange={e => setDraft({ ...draft, position: e.target.value === "" ? undefined : parseInt(e.target.value, 10) })}
+              placeholder={`${flow.items.length} (al final)`}
+              className="w-full mt-1 px-2.5 py-1.5 text-sm border border-stone-200 rounded-md focus:outline-none focus:border-stone-900" />
+            <div className="text-[10.5px] text-stone-500 mt-1">0 = al principio · {flow.items.length} = al final · déjalo vacío para añadir al final</div>
+          </div>
+          <div className="bg-purple-50 border border-purple-200 rounded-md p-3 text-[11.5px] text-purple-900 leading-relaxed">
+            <strong>ℹ️ Nota:</strong> Este mensaje custom aparecerá en <strong>Flujos, Mapa, Calendario y Checker</strong>. Llevará el badge ✨ Custom para distinguirlo de los mensajes del template original.
+          </div>
+        </div>
+        <div className="px-5 py-3 bg-stone-50 border-t border-stone-200 flex justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-stone-700">Cancelar</button>
+          <button onClick={save} data-testid="new-msg-save-btn"
+            className="px-4 py-2 text-sm font-medium bg-stone-900 text-white rounded-md hover:bg-stone-700 inline-flex items-center gap-1.5">
+            <Plus size={14} /> Añadir mensaje
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ====================================================================
 // VARIABLES PICKER — insertar variables en el textarea de edición
 // ====================================================================
 function VarPicker({ vars, onInsert }) {
@@ -465,8 +532,89 @@ function VarPicker({ vars, onInsert }) {
 // ====================================================================
 // ATTACH CREATIVE MODAL — asociar creativo a un mensaje desde la tarjeta
 // ====================================================================
-function AttachCreativeModal({ msgKey, creatives, onAttach, onRemove, onClose }) {
-  const [tab, setTab] = useState("existing"); // existing | new
+// ====================================================================
+// EVOLUTION SEND MODAL — envío real via Evolution API (solo broadcasts & venta_comunidad)
+// ====================================================================
+function EvolutionSendModal({ msg, rendered, evolutionConfig, onSend, onClose, flowKey, msgKey }) {
+  const [target, setTarget] = useState("group"); // "group" | "number"
+  const [to, setTo] = useState("");
+  const [message, setMessage] = useState(rendered || "");
+  const [delayS, setDelayS] = useState(0);
+  const [result, setResult] = useState(null);
+  const [sending, setSending] = useState(false);
+
+  const configured = !!(evolutionConfig?.server_url && evolutionConfig?.api_key && evolutionConfig?.instance);
+
+  const doSend = async () => {
+    if (!to.trim() || !message.trim()) { alert("Rellena destinatario y mensaje"); return; }
+    setSending(true);
+    setResult(null);
+    try {
+      const r = await onSend({ to: to.trim(), message, delay_ms: (delayS || 0) * 1000, msgKey });
+      setResult(r);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full overflow-hidden flex flex-col max-h-[90vh]" onClick={e => e.stopPropagation()}>
+        <div className="px-5 py-3 border-b border-stone-200 flex items-center gap-2">
+          <Send size={16} className="text-emerald-600" />
+          <div className="font-bold text-stone-900 text-sm">Enviar {msg.id || "mensaje"} vía Evolution API</div>
+          <button onClick={onClose} className="ml-auto text-stone-500 hover:text-stone-900"><X size={16} /></button>
+        </div>
+        <div className="p-5 space-y-3 overflow-y-auto">
+          {!configured && (
+            <div className="bg-red-50 border border-red-200 rounded p-3 text-[11.5px] text-red-900">
+              ⚠️ <strong>Falta configurar Evolution API</strong>. Ve a <em>Conexiones → Evolution API</em> y rellena server URL, API key e instancia.
+            </div>
+          )}
+          <div className="text-[11.5px] text-stone-700 bg-amber-50 border border-amber-200 rounded p-2.5 leading-relaxed">
+            ℹ️ <strong>Envío vía Evolution</strong> (no oficial). Uso previsto: <em>broadcasts programados</em> y <em>venta comunidad</em>. Para los demás flujos usa plantillas Meta oficiales para evitar bans.
+          </div>
+          <div>
+            <label className="text-[11px] font-medium text-stone-600">Destinatario</label>
+            <div className="flex gap-1.5 mt-1 mb-1">
+              <button onClick={() => setTarget("group")} className={`px-2.5 py-1 text-xs rounded-md border ${target === "group" ? "bg-stone-900 text-white border-stone-900" : "bg-white border-stone-300"}`}>👥 Grupo / Comunidad</button>
+              <button onClick={() => setTarget("number")} className={`px-2.5 py-1 text-xs rounded-md border ${target === "number" ? "bg-stone-900 text-white border-stone-900" : "bg-white border-stone-300"}`}>📱 Número individual</button>
+            </div>
+            <input value={to} onChange={e => setTo(e.target.value)}
+              placeholder={target === "group" ? "Ej: 120363012345678901@g.us" : "Ej: 34612345678"}
+              className="w-full px-2.5 py-1.5 text-sm font-mono border border-stone-200 rounded-md focus:outline-none focus:border-stone-900" />
+          </div>
+          <div>
+            <label className="text-[11px] font-medium text-stone-600">Mensaje a enviar (ya con variables reemplazadas)</label>
+            <textarea value={message} onChange={e => setMessage(e.target.value)}
+              className="w-full mt-1 px-2.5 py-2 text-sm font-mono border border-stone-200 rounded-md min-h-[120px] focus:outline-none focus:border-stone-900" />
+          </div>
+          <div>
+            <label className="text-[11px] font-medium text-stone-600">Delay antes de enviar (segundos)</label>
+            <input type="number" min="0" value={delayS} onChange={e => setDelayS(parseInt(e.target.value || "0", 10))}
+              className="w-24 mt-1 px-2 py-1 text-sm border border-stone-200 rounded-md focus:outline-none focus:border-stone-900" />
+          </div>
+          {result && (
+            <div className={`rounded p-3 text-[11.5px] border ${result.ok ? "bg-emerald-50 border-emerald-200 text-emerald-900" : "bg-red-50 border-red-200 text-red-900"}`}>
+              {result.ok ? "✅ Mensaje enviado correctamente" : "❌ Error en el envío"}
+              <div className="mt-1 text-[10.5px] font-mono break-all">HTTP {result.status || "—"} · {typeof result.response === "object" ? JSON.stringify(result.response).slice(0, 240) : String(result.response || result.error || "")}</div>
+            </div>
+          )}
+        </div>
+        <div className="px-5 py-3 bg-stone-50 border-t border-stone-200 flex justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-stone-700">Cerrar</button>
+          <button onClick={doSend} disabled={sending || !configured}
+            data-testid={`evo-send-confirm-${flowKey}`}
+            className="px-4 py-2 text-sm font-medium bg-emerald-600 text-white rounded-md hover:bg-emerald-700 disabled:opacity-50 inline-flex items-center gap-1.5">
+            <Send size={13} /> {sending ? "Enviando..." : "Enviar ahora"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AttachCreativeModal({ msgKey, creatives, onAttach, onRemove, onClose }) {  const [tab, setTab] = useState("existing"); // existing | new
   const [draft, setDraft] = useState({ name: "", type: "image", url: "", notes: "" });
 
   const attached = creatives.filter(c => c.messageKey === msgKey);
@@ -590,6 +738,8 @@ function MessageCard({
   templateMeta = null, onSetTemplateMeta,
   me = "",
   onAttachCreative, onRemoveCreativeAssoc,
+  isCustom = false, onRemoveCustom = null,
+  canUseEvolution = false, evolutionConfig = null, onEvolutionSend = null,
 }) {
   const [expanded, setExpanded] = useState(true);
   const [editing, setEditing] = useState(false);
@@ -598,6 +748,7 @@ function MessageCard({
   const [showTpl, setShowTpl] = useState(false);
   const [showVarPicker, setShowVarPicker] = useState(false);
   const [showAttachModal, setShowAttachModal] = useState(false);
+  const [showEvoSend, setShowEvoSend] = useState(false);
   const [newComment, setNewComment] = useState("");
   const textareaRef = useRef(null);
 
@@ -646,6 +797,7 @@ function MessageCard({
           <div className="flex-1 min-w-0">
             <div className="flex items-baseline gap-2 flex-wrap">
               <span className="text-xs font-mono font-semibold text-stone-900 bg-stone-100 px-1.5 py-0.5 rounded">{label}</span>
+              {isCustom && <span className="text-[10px] text-purple-800 bg-purple-100 border border-purple-300 px-1.5 py-0.5 rounded font-semibold" title="Mensaje añadido manualmente (no viene del template original)">✨ CUSTOM</span>}
               {timing && <span className="text-[11px] text-stone-500">{timing}</span>}
               {isEdited && <span className="text-[10px] text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded">editado</span>}
               {hasSkip && <span className="text-[10px] text-sky-800 bg-sky-50 border border-sky-200 px-1.5 py-0.5 rounded" title={skip.pseudocode}>⏭ D{skip.day_offset}</span>}
@@ -697,6 +849,22 @@ function MessageCard({
                     className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-stone-600 border border-stone-300 rounded-md hover:border-stone-900">
                     <MessageSquare size={12} /> {comments.length}
                   </button>
+                  {canUseEvolution && (
+                    <button onClick={e => { e.stopPropagation(); setShowEvoSend(true); }}
+                      data-testid={`evo-send-btn-${flowKey}-${msg.id || index}`}
+                      title="Enviar ahora vía Evolution API (broadcasts / comunidad)"
+                      className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-300 rounded-md hover:bg-emerald-100">
+                      <Send size={12} /> Enviar ahora
+                    </button>
+                  )}
+                  {isCustom && onRemoveCustom && (
+                    <button onClick={e => { e.stopPropagation(); onRemoveCustom(); }}
+                      data-testid={`remove-custom-${flowKey}-${msg.id}`}
+                      title="Eliminar este mensaje custom"
+                      className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-red-600 border border-red-300 rounded-md hover:bg-red-50">
+                      <Trash2 size={12} />
+                    </button>
+                  )}
                   <CopyButton text={rendered} />
                 </div>
               </div>
@@ -937,6 +1105,17 @@ function MessageCard({
           onClose={() => setShowAttachModal(false)}
         />
       )}
+      {showEvoSend && canUseEvolution && (
+        <EvolutionSendModal
+          msg={msg}
+          rendered={rendered}
+          evolutionConfig={evolutionConfig}
+          onSend={onEvolutionSend}
+          onClose={() => setShowEvoSend(false)}
+          flowKey={flowKey}
+          msgKey={msgKey}
+        />
+      )}
     </div>
   );
 }
@@ -948,8 +1127,10 @@ function FlowView({
   approvalByMsg, onSetApproval,
   templatesByMsg, onSetTemplateMeta,
   onAttachCreative, onRemoveCreativeAssoc,
+  onAddCustomMessage, onRemoveCustomMessage, onEvolutionSend, evolutionConfig,
   me,
 }) {
+  const canUseEvolution = flow.key === "broadcasts" || flow.key === "venta_comunidad";
   const renderMsg = (m, i, pref) => {
     const mk = `${flow.key}:${m.id || i}`;
     return (
@@ -968,13 +1149,32 @@ function FlowView({
         me={me}
         onAttachCreative={onAttachCreative}
         onRemoveCreativeAssoc={onRemoveCreativeAssoc}
+        isCustom={!!m._custom}
+        onRemoveCustom={m._custom && onRemoveCustomMessage ? (() => onRemoveCustomMessage(flow.key, m.id)) : null}
+        canUseEvolution={canUseEvolution}
+        evolutionConfig={evolutionConfig}
+        onEvolutionSend={onEvolutionSend}
       />
     );
   };
+  const AddBar = onAddCustomMessage && (
+    <div className="flex items-center justify-between mb-3 p-3 bg-gradient-to-r from-purple-50 to-indigo-50 border border-purple-200 rounded-md">
+      <div className="text-[11.5px] text-purple-900">
+        <strong>Flujo {flow.label}</strong> · {flow.items.length} mensajes ({flow.items.filter(x => x._custom).length} custom)
+        {canUseEvolution && <span className="ml-2 inline-block text-[10px] font-semibold bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded">🚀 Evolution API activa</span>}
+        {!canUseEvolution && <span className="ml-2 inline-block text-[10px] font-semibold bg-sky-100 text-sky-800 px-1.5 py-0.5 rounded">📋 Plantilla Meta oficial</span>}
+      </div>
+      <button onClick={() => onAddCustomMessage(flow)} data-testid={`flow-add-msg-${flow.key}`}
+        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-purple-600 text-white rounded-md hover:bg-purple-700">
+        <Plus size={12} /> Añadir mensaje
+      </button>
+    </div>
+  );
   if (flow.branching) {
     const branches = buildBranches(flow.items);
     return (
       <div className="space-y-6">
+        {AddBar}
         {Object.entries(branches).map(([bname, items]) => (
           <div key={bname}>
             <div className="sticky top-[105px] bg-stone-50 py-2 z-10">
@@ -987,7 +1187,7 @@ function FlowView({
       </div>
     );
   }
-  return <div className="space-y-2">{flow.items.map((m, i) => renderMsg(m, i, flow.key))}</div>;
+  return <div className="space-y-2">{AddBar}{flow.items.map((m, i) => renderMsg(m, i, flow.key))}</div>;
 }
 
 
@@ -1200,7 +1400,7 @@ function ProjectsDashboard({ projects, onOpen, onCreate, onEdit, onDuplicate, on
 // ====================================================================
 // MINDMAP (dinámico según la estrategia del proyecto)
 // ====================================================================
-function FlowMiniMap({ flow, onMsgClick }) {
+function FlowMiniMap({ flow, onMsgClick, onAddMessage }) {
   // Muestra los mensajes del flujo como chips conectados.
   // Si el flujo tiene ramas (M3.A, M3.B...), agrupa visualmente.
   const branches = flow.branching ? buildBranches(flow.items) : { main: flow.items };
@@ -1214,6 +1414,13 @@ function FlowMiniMap({ flow, onMsgClick }) {
           <div className="text-sm font-semibold text-stone-900">{flow.label}</div>
           <div className="text-[10px] text-stone-500">{flow.items.length} mensajes{flow.branching ? ` · ${branchKeys.length - (branches.main ? 0 : 1)} ramas` : ""}</div>
         </div>
+        {onAddMessage && (
+          <button onClick={() => onAddMessage(flow)}
+            data-testid={`map-add-msg-${flow.key}`}
+            className="inline-flex items-center gap-1 px-2 py-1 text-[10.5px] font-medium rounded border text-purple-700 border-purple-300 bg-purple-50 hover:bg-purple-100">
+            <Plus size={11} /> Añadir mensaje
+          </button>
+        )}
         <button onClick={() => onMsgClick && onMsgClick(flow.key)}
           className="text-[10px] font-medium text-stone-600 hover:text-stone-900 underline">
           Ver flujo →
@@ -1233,18 +1440,33 @@ function FlowMiniMap({ flow, onMsgClick }) {
               <div className="flex items-center gap-1.5 min-w-max">
                 {items.map((m, i) => (
                   <React.Fragment key={`${bname}_${i}`}>
+                    {onAddMessage && i === 0 && (
+                      <button onClick={() => onAddMessage(flow, 0)} title="Insertar al principio"
+                        className="text-purple-500 hover:text-purple-700 shrink-0 px-0.5 text-xs">+</button>
+                    )}
                     <button
                       onClick={() => onMsgClick && onMsgClick(flow.key, m.id || i)}
                       title={m.objetivo || (m.copy || "").slice(0, 80)}
-                      className="bg-white border rounded-md px-2 py-1.5 text-left hover:border-stone-900 transition min-w-[90px] max-w-[130px]"
+                      className={`bg-white border rounded-md px-2 py-1.5 text-left hover:border-stone-900 transition min-w-[90px] max-w-[130px] ${m._custom ? "ring-2 ring-purple-300" : ""}`}
                       style={{ borderColor: flow.color + "55" }}
                     >
-                      <div className="text-[10.5px] font-mono font-semibold text-stone-900 truncate">{m.id || m.dia || `#${i+1}`}</div>
+                      <div className="text-[10.5px] font-mono font-semibold text-stone-900 truncate">{m._custom && "✨ "}{m.id || m.dia || `#${i+1}`}</div>
                       <div className="text-[9.5px] text-stone-500 truncate">{m.timing || m.hora || m.fecha_relativa || ""}</div>
                       {m.objetivo && <div className="text-[9.5px] text-stone-700 truncate mt-0.5">{m.objetivo}</div>}
                     </button>
                     {i < items.length - 1 && (
-                      <div className="text-stone-400 shrink-0 text-xs">→</div>
+                      <>
+                        {onAddMessage ? (
+                          <button onClick={() => onAddMessage(flow, i + 1)} title="Insertar entre mensajes"
+                            className="text-purple-500 hover:text-purple-700 shrink-0 px-0.5 text-sm">⊕</button>
+                        ) : (
+                          <div className="text-stone-400 shrink-0 text-xs">→</div>
+                        )}
+                      </>
+                    )}
+                    {i === items.length - 1 && onAddMessage && (
+                      <button onClick={() => onAddMessage(flow, items.length)} title="Insertar al final"
+                        className="text-purple-500 hover:text-purple-700 shrink-0 px-0.5 text-xs">+</button>
                     )}
                   </React.Fragment>
                 ))}
@@ -1257,7 +1479,7 @@ function FlowMiniMap({ flow, onMsgClick }) {
   );
 }
 
-function MindMap({ strategyKey, flows, onFlowClick }) {
+function MindMap({ strategyKey, flows, onFlowClick, onAddMessage }) {
   const flowsResolved = flows || getFlowsForStrategy(strategyKey);
 
   // Para webinar: diagrama original
@@ -1298,7 +1520,7 @@ function MindMap({ strategyKey, flows, onFlowClick }) {
           <h3 className="text-lg font-bold text-stone-900 mb-1">Mapa por flujo</h3>
           <p className="text-xs text-stone-500 mb-4">Vista secuencial de los mensajes dentro de cada flujo</p>
           <div className="space-y-4">
-            {flowsResolved.map(f => <FlowMiniMap key={f.key} flow={f} onMsgClick={onFlowClick} />)}
+            {flowsResolved.map(f => <FlowMiniMap key={f.key} flow={f} onMsgClick={onFlowClick} onAddMessage={onAddMessage} />)}
           </div>
         </div>
       </div>
@@ -1333,7 +1555,7 @@ function MindMap({ strategyKey, flows, onFlowClick }) {
         <h3 className="text-lg font-bold text-stone-900 mb-1">Mapa por flujo</h3>
         <p className="text-xs text-stone-500 mb-4">Vista secuencial de los mensajes dentro de cada flujo</p>
         <div className="space-y-4">
-          {flowsResolved.map(f => <FlowMiniMap key={f.key} flow={f} onMsgClick={onFlowClick} />)}
+          {flowsResolved.map(f => <FlowMiniMap key={f.key} flow={f} onMsgClick={onFlowClick} onAddMessage={onAddMessage} />)}
         </div>
       </div>
     </div>
@@ -1617,6 +1839,32 @@ function ConnectionsPanel({ conn, setConn, projectName, notifyConfig, setNotifyC
       </div>
       <div className="bg-white border border-stone-200 rounded-lg p-5">
         <div className="flex items-center gap-2 mb-1">
+          <div className="w-6 h-6 rounded bg-emerald-600 flex items-center justify-center text-white text-xs font-bold">🚀</div>
+          <div className="font-semibold text-stone-900">Evolution API (broadcasts & comunidad)</div>
+        </div>
+        <div className="text-[11.5px] text-stone-500 mb-4 leading-relaxed">
+          Para los flujos <strong>broadcasts programados</strong> y <strong>venta comunidad</strong>. Los demás flujos (1-1, retargeting…) usan plantillas oficiales Meta para evitar bans.
+        </div>
+        <div className="grid grid-cols-1 gap-3">
+          <Field label="Server URL Evolution" value={conn.evolution?.server_url || ""}
+            onChange={v => setConn({ ...conn, evolution: { ...(conn.evolution || {}), server_url: v } })}
+            placeholder="https://evolution.miserver.com" mono full />
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="API Key" value={conn.evolution?.api_key || ""}
+              onChange={v => setConn({ ...conn, evolution: { ...(conn.evolution || {}), api_key: v } })}
+              placeholder="clave-larga" mono />
+            <Field label="Instancia" value={conn.evolution?.instance || ""}
+              onChange={v => setConn({ ...conn, evolution: { ...(conn.evolution || {}), instance: v } })}
+              placeholder="nombre-instancia" mono />
+          </div>
+          <div className="text-[10.5px] text-stone-500 bg-stone-50 border border-stone-200 rounded p-2 leading-relaxed">
+            💡 Para enviar a una <strong>comunidad/grupo</strong> WhatsApp usa el JID del grupo (formato <code className="font-mono">1203630...@g.us</code>). Para número individual, formato E.164 sin <code className="font-mono">+</code>.
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-white border border-stone-200 rounded-lg p-5">
+        <div className="flex items-center gap-2 mb-1">
           <div className="w-6 h-6 rounded bg-indigo-600 flex items-center justify-center text-white text-xs font-bold">🔔</div>
           <div className="font-semibold text-stone-900">Notificaciones al equipo</div>
         </div>
@@ -1668,17 +1916,59 @@ function ConnectionsPanel({ conn, setConn, projectName, notifyConfig, setNotifyC
 // ====================================================================
 function AIPromptPanel({ aiPrompt, setAIPrompt, vars }) {
   const [preview, setPreview] = useState(false);
+  const [showChat, setShowChat] = useState(false);
+  const [messages, setMessages] = useState([]); // [{role:'user'|'assistant', text}]
+  const [input, setInput] = useState("");
+  const [loadingChat, setLoadingChat] = useState(false);
+  const [sessionId] = useState(() => "test_" + Math.random().toString(36).slice(2, 10));
   const rendered = replaceVars(aiPrompt, vars);
+
+  const send = async () => {
+    if (!input.trim() || loadingChat) return;
+    const userMsg = { role: "user", text: input.trim() };
+    const nextMessages = [...messages, userMsg];
+    setMessages(nextMessages);
+    setInput("");
+    setLoadingChat(true);
+    try {
+      const r = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/ai/test-chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          system_prompt: rendered,
+          messages: nextMessages,
+          session_id: sessionId,
+          model_provider: "anthropic",
+          model_name: "claude-sonnet-4-5-20250929",
+        }),
+      });
+      const data = await r.json();
+      if (data.ok && data.response) {
+        setMessages(m => [...m, { role: "assistant", text: data.response }]);
+      } else {
+        setMessages(m => [...m, { role: "assistant", text: "⚠️ Error: " + (data.detail || "respuesta vacía") }]);
+      }
+    } catch (e) {
+      setMessages(m => [...m, { role: "assistant", text: "⚠️ Error de red: " + String(e) }]);
+    } finally {
+      setLoadingChat(false);
+    }
+  };
+
   return (
     <div className="space-y-4 max-w-4xl">
       <div>
         <h2 className="text-lg font-bold text-stone-900">Prompt del asistente IA</h2>
-        <p className="text-xs text-stone-500 mt-0.5">System prompt para nodo IA en n8n</p>
+        <p className="text-xs text-stone-500 mt-0.5">System prompt para nodo IA en n8n (o probado aquí mismo con Claude Sonnet 4.5 vía Emergent LLM key)</p>
       </div>
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex gap-2">
           <button onClick={() => setPreview(false)} className={`px-3 py-1.5 text-xs font-medium rounded-md border ${!preview ? "bg-stone-900 text-white border-stone-900" : "bg-white border-stone-200"}`}>Editar</button>
           <button onClick={() => setPreview(true)} className={`px-3 py-1.5 text-xs font-medium rounded-md border ${preview ? "bg-stone-900 text-white border-stone-900" : "bg-white border-stone-200"}`}>Preview</button>
+          <button onClick={() => setShowChat(v => !v)} data-testid="ai-toggle-chat-btn"
+            className={`px-3 py-1.5 text-xs font-medium rounded-md border ${showChat ? "bg-indigo-600 text-white border-indigo-600" : "bg-white border-indigo-300 text-indigo-700 hover:bg-indigo-50"}`}>
+            🧪 {showChat ? "Ocultar chat de prueba" : "Probar prompt"}
+          </button>
         </div>
         <div className="flex items-center gap-3">
           <span className="text-[11px] text-stone-500">{aiPrompt.length} chars</span>
@@ -1690,7 +1980,45 @@ function AIPromptPanel({ aiPrompt, setAIPrompt, vars }) {
         <div className="bg-white border border-stone-200 rounded-lg p-5 text-sm text-stone-800 whitespace-pre-wrap leading-relaxed font-mono">{rendered}</div>
       ) : (
         <textarea value={aiPrompt} onChange={e => setAIPrompt(e.target.value)}
-          className="w-full min-h-[500px] p-5 text-sm font-mono bg-white border border-stone-200 rounded-lg focus:outline-none focus:border-stone-900 leading-relaxed" />
+          className="w-full min-h-[400px] p-5 text-sm font-mono bg-white border border-stone-200 rounded-lg focus:outline-none focus:border-stone-900 leading-relaxed" />
+      )}
+
+      {showChat && (
+        <div className="bg-white border-2 border-indigo-200 rounded-lg overflow-hidden" data-testid="ai-test-chat-panel">
+          <div className="px-4 py-2.5 bg-gradient-to-r from-indigo-50 to-violet-50 border-b border-indigo-200 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Bot size={14} className="text-indigo-700" />
+              <div className="text-sm font-semibold text-indigo-900">Chat de prueba · Claude Sonnet 4.5</div>
+            </div>
+            <button onClick={() => setMessages([])} className="text-[11px] text-stone-600 hover:text-stone-900">Limpiar</button>
+          </div>
+          <div className="p-3 max-h-[350px] overflow-y-auto space-y-2 bg-stone-50">
+            {messages.length === 0 && (
+              <div className="text-[12px] text-stone-500 text-center py-6">
+                Escribe un mensaje como si fueras un lead para ver cómo respondería la IA con tu prompt actual.
+              </div>
+            )}
+            {messages.map((m, i) => (
+              <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+                <div className={`max-w-[75%] rounded-lg px-3 py-2 text-[13px] whitespace-pre-wrap ${
+                  m.role === "user" ? "bg-emerald-600 text-white" : "bg-white border border-stone-200 text-stone-800"
+                }`}>{m.text}</div>
+              </div>
+            ))}
+            {loadingChat && <div className="text-[11px] text-stone-500 italic pl-2">Claude está pensando...</div>}
+          </div>
+          <div className="p-3 border-t border-stone-200 flex items-center gap-2">
+            <input value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === "Enter" && send()}
+              data-testid="ai-test-chat-input"
+              placeholder="Escribe un mensaje como lead (ej: 'hola, ¿cuándo es el webinar?')"
+              className="flex-1 px-3 py-2 text-sm border border-stone-200 rounded-md focus:outline-none focus:border-stone-900" />
+            <button onClick={send} disabled={loadingChat || !input.trim()}
+              data-testid="ai-test-chat-send"
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium bg-indigo-600 text-white rounded-md hover:bg-indigo-700 disabled:opacity-50">
+              <Send size={13} /> {loadingChat ? "..." : "Enviar"}
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -2487,10 +2815,38 @@ function generateMockEvents(flows) {
   return events.sort((a, b) => b.at - a.at);
 }
 
-function MonitoringPanel({ flows }) {
-  const [events] = useState(() => generateMockEvents(flows));
+function MonitoringPanel({ flows, projectId }) {
+  const [events, setEvents] = useState([]);
+  const [mode, setMode] = useState("mock"); // "live" | "mock"
+  const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("all");
   const [flowFilter, setFlowFilter] = useState("all");
+
+  const fetchEvents = async () => {
+    if (!projectId) { setEvents(generateMockEvents(flows)); setMode("mock"); setLoading(false); return; }
+    setLoading(true);
+    try {
+      const r = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/events?project_id=${encodeURIComponent(projectId)}&limit=500`);
+      const data = await r.json();
+      const mapped = (data || []).map(e => ({
+        id: e.id,
+        type: e.event || "message_sent",
+        flow: e.flow || "",
+        msg_id: e.msg_id || "",
+        user: e.user_id || "",
+        timestamp: typeof e.timestamp === "string" ? new Date(e.timestamp).getTime() : e.timestamp,
+        error: e.error || null,
+      }));
+      if (mapped.length === 0) { setEvents(generateMockEvents(flows)); setMode("mock"); }
+      else { setEvents(mapped); setMode("live"); }
+    } catch (err) {
+      setEvents(generateMockEvents(flows)); setMode("mock");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { fetchEvents(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [projectId]);
 
   const filtered = events.filter(e => (filter === "all" || e.type === filter) && (flowFilter === "all" || e.flow === flowFilter));
   const failed = events.filter(e => e.type === "message_failed");
@@ -2514,11 +2870,23 @@ function MonitoringPanel({ flows }) {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-bold text-stone-900">Salud del flujo</h2>
-          <p className="text-xs text-stone-500 mt-0.5">Monitoreo en tiempo real · <span className="text-amber-700 font-medium">datos simulados — conectar a n8n pendiente</span></p>
+          <p className="text-xs text-stone-500 mt-0.5">
+            {mode === "live"
+              ? <>Eventos en tiempo real desde n8n · <span className="text-emerald-700 font-medium">{events.length} eventos recibidos</span></>
+              : <>Monitoreo · <span className="text-amber-700 font-medium">sin eventos reales todavía — mostrando datos simulados</span></>
+            }
+          </p>
         </div>
         <div className="flex items-center gap-2">
-          <div className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] bg-emerald-50 border border-emerald-200 rounded-md text-emerald-700">
-            <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" /> Mock activo
+          <button onClick={fetchEvents} disabled={loading}
+            data-testid="monitor-refresh-btn"
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] bg-white border border-stone-300 rounded-md hover:border-stone-900 disabled:opacity-50">
+            <RotateCcw size={11} className={loading ? "animate-spin" : ""} /> {loading ? "Actualizando" : "Refrescar"}
+          </button>
+          <div className={`flex items-center gap-1.5 px-2.5 py-1 text-[11px] border rounded-md ${
+            mode === "live" ? "bg-emerald-50 border-emerald-200 text-emerald-700" : "bg-amber-50 border-amber-200 text-amber-700"
+          }`}>
+            <div className={`w-1.5 h-1.5 rounded-full ${mode === "live" ? "bg-emerald-500 animate-pulse" : "bg-amber-500"}`} /> {mode === "live" ? "LIVE" : "MOCK"}
           </div>
         </div>
       </div>
@@ -3191,7 +3559,26 @@ function HistoryPanel({ history }) {
 // ====================================================================
 function ProjectWorkspace({ project, onBack, me }) {
   const strat = STRATEGY_TEMPLATES[project.strategy];
-  const FLOWS = useMemo(() => getFlowsForStrategy(project.strategy), [project.strategy]);
+  // customMsgs: mensajes añadidos manualmente por el usuario (desde Mapa o Flujos)
+  // Estructura: { [flowKey]: [{id, dia, timing, hora, objetivo, copy, botones, position}] }
+  const [customMsgs, setCustomMsgs] = useState({});
+  const FLOWS = useMemo(() => {
+    const base = getFlowsForStrategy(project.strategy);
+    return base.map(f => {
+      const customs = (customMsgs[f.key] || []).map(m => ({ ...m, _custom: true }));
+      if (customs.length === 0) return f;
+      // Insertar por position (si tiene) o al final
+      const items = [...f.items];
+      const withPos = customs.filter(c => typeof c.position === "number");
+      const withoutPos = customs.filter(c => typeof c.position !== "number");
+      withPos.sort((a, b) => a.position - b.position).forEach(c => {
+        const pos = Math.max(0, Math.min(items.length, c.position));
+        items.splice(pos, 0, c);
+      });
+      withoutPos.forEach(c => items.push(c));
+      return { ...f, items };
+    });
+  }, [project.strategy, customMsgs]);
 
   // Estados por proyecto
   const [vars, setVars] = useState(getDefaultVarsForStrategy(project.strategy));
@@ -3249,6 +3636,8 @@ function ProjectWorkspace({ project, onBack, me }) {
       if (scn) setConnections(scn);
       const sncfg = await loadFromStorage(pk(pid, "notify_config"));
       if (sncfg) setNotifyConfig(sncfg);
+      const scust = await loadFromStorage(pk(pid, "custom_msgs"));
+      if (scust) setCustomMsgs(scust);
       const scap = await loadFromStorage(pk(pid, "captacion"));
       if (scap) setCaptacionConfig(scap);
       if (sp) setAIPrompt(sp);
@@ -3277,6 +3666,7 @@ function ProjectWorkspace({ project, onBack, me }) {
   useEffect(() => debouncedSave("creatives", creatives), [creatives, loaded]);
   useEffect(() => debouncedSave("connections", connections), [connections, loaded]);
   useEffect(() => debouncedSave("notify_config", notifyConfig), [notifyConfig, loaded]);
+  useEffect(() => debouncedSave("custom_msgs", customMsgs), [customMsgs, loaded]);
   useEffect(() => debouncedSave("captacion", captacionConfig), [captacionConfig, loaded]);
   useEffect(() => debouncedSave("aiPrompt", aiPrompt), [aiPrompt, loaded]);
   useEffect(() => debouncedSave("comments", commentsByMsg), [commentsByMsg, loaded]);
@@ -3326,6 +3716,60 @@ function ProjectWorkspace({ project, onBack, me }) {
   const removeCreativeAssoc = (msgKey, creativeId) => {
     setCreatives(prev => prev.map(c => c.id === creativeId ? { ...c, messageKey: "" } : c));
     logHistory("desvinculó creativo", msgKey);
+  };
+
+  // Mensajes custom (añadidos desde Mapa o Flujos)
+  const addCustomMessage = (flowKey, draft) => {
+    const id = "CUSTOM_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+    const newMsg = {
+      id,
+      dia: draft.dia || "",
+      timing: draft.timing || draft.hora || "",
+      hora: draft.hora || "",
+      objetivo: draft.objetivo || "",
+      copy: draft.copy || "",
+      botones: draft.botones || "",
+      position: typeof draft.position === "number" ? draft.position : undefined,
+    };
+    setCustomMsgs(prev => ({ ...prev, [flowKey]: [...(prev[flowKey] || []), newMsg] }));
+    logHistory("añadió mensaje custom", `${flowKey}:${id}`);
+    return id;
+  };
+  const removeCustomMessage = (flowKey, id) => {
+    setCustomMsgs(prev => ({ ...prev, [flowKey]: (prev[flowKey] || []).filter(m => m.id !== id) }));
+    logHistory("eliminó mensaje custom", `${flowKey}:${id}`);
+  };
+
+  // Estado para el modal de nuevo mensaje (desde Mapa o Flujos)
+  const [newMsgState, setNewMsgState] = useState(null); // { flow, position }
+  const openNewMsg = (flow, position) => setNewMsgState({ flow, position });
+
+  // Envío real via Evolution API (solo para broadcasts y venta_comunidad)
+  const handleEvolutionSend = async (params) => {
+    const evo = connections.evolution;
+    if (!evo?.server_url || !evo?.api_key || !evo?.instance) {
+      alert("Falta configurar Evolution API en Conexiones (server URL, API key e instancia).");
+      return { ok: false };
+    }
+    try {
+      const r = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/evolution/send`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          server_url: evo.server_url,
+          api_key: evo.api_key,
+          instance: evo.instance,
+          to: params.to,
+          message: params.message,
+          delay_ms: params.delay_ms || 0,
+        }),
+      });
+      const data = await r.json();
+      logHistory(data.ok ? "envió via Evolution" : "falló envío Evolution", params.msgKey || "");
+      return data;
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
   };
   const setApproval = (msgKey, a) => {
     setApprovalByMsg(prev => { const n = { ...prev }; if (a === null) delete n[msgKey]; else n[msgKey] = a; return n; });
@@ -3523,17 +3967,21 @@ function ProjectWorkspace({ project, onBack, me }) {
                 me={me}
                 onAttachCreative={attachCreative}
                 onRemoveCreativeAssoc={removeCreativeAssoc}
+                onAddCustomMessage={openNewMsg}
+                onRemoveCustomMessage={removeCustomMessage}
+                evolutionConfig={connections.evolution || null}
+                onEvolutionSend={handleEvolutionSend}
               />}
             </main>
           </>
         )}
 
-        {activeTab === "mindmap" && <main className="flex-1 min-w-0 px-8 py-8"><MindMap strategyKey={project.strategy} flows={FLOWS} onFlowClick={fk => { setActiveFlow(fk); setActiveTab("flows"); }} /></main>}
+        {activeTab === "mindmap" && <main className="flex-1 min-w-0 px-8 py-8"><MindMap strategyKey={project.strategy} flows={FLOWS} onFlowClick={fk => { setActiveFlow(fk); setActiveTab("flows"); }} onAddMessage={openNewMsg} /></main>}
         {activeTab === "calendar" && <main className="flex-1 min-w-0 px-8 py-8"><CalendarPanel flows={FLOWS} vars={vars} /></main>}
         {activeTab === "simulator" && <main className="flex-1 min-w-0 px-8 py-8"><SimulatorPanel flows={FLOWS} vars={vars} edits={edits} /></main>}
         {activeTab === "checker" && <main className="flex-1 min-w-0 px-8 py-8"><CheckerPanel flows={FLOWS} vars={vars} edits={edits} creatives={creatives} templatesByMsg={templatesByMsg} variantsByMsg={variantsByMsg} onGoToMessage={goToMessage} /></main>}
         {activeTab === "creatives" && <main className="flex-1 min-w-0 px-8 py-8"><CreativesPanel creatives={creatives} setCreatives={setCreatives} allMessages={allMessages} /></main>}
-        {activeTab === "monitoring" && <main className="flex-1 min-w-0 px-8 py-8"><MonitoringPanel flows={FLOWS} /></main>}
+        {activeTab === "monitoring" && <main className="flex-1 min-w-0 px-8 py-8"><MonitoringPanel flows={FLOWS} projectId={project.id} /></main>}
         {activeTab === "client" && <main className="flex-1 min-w-0 px-8 py-8"><ClientReviewPanel flows={FLOWS} vars={vars} edits={edits} approvalByMsg={approvalByMsg} onSetApproval={setApproval} me={me} projectName={project.name} projectId={project.id} /></main>}
         {activeTab === "snapshots" && <main className="flex-1 min-w-0 px-8 py-8"><SnapshotsPanel snapshots={snapshots} onCreate={createSnapshot} onRestore={restoreSnapshot} onDelete={deleteSnapshot} /></main>}
         {activeTab === "history" && <main className="flex-1 min-w-0 px-8 py-8"><HistoryPanel history={history} /></main>}
@@ -3543,6 +3991,14 @@ function ProjectWorkspace({ project, onBack, me }) {
       </div>
 
       {previewMsg && <WhatsAppPreview msg={{ ...previewMsg, copy: edits[`${activeFlow}:${previewMsg.id}`] ?? previewMsg.copy }} vars={vars} onClose={() => setPreviewMsg(null)} />}
+      {newMsgState && (
+        <NewMessageModal
+          flow={newMsgState.flow}
+          defaultPosition={newMsgState.position}
+          onSave={(draft) => { addCustomMessage(newMsgState.flow.key, draft); setNewMsgState(null); }}
+          onClose={() => setNewMsgState(null)}
+        />
+      )}
     </div>
   );
 }
@@ -3614,6 +4070,23 @@ function PublicReviewPage({ token }) {
     }
   };
 
+  // Computar FLOWS (con customs) ANTES de early returns, para respetar Rules of Hooks
+  const flows = useMemo(() => {
+    if (!state.data) return [];
+    const base = getFlowsForStrategy(state.data.project.strategy);
+    const customs = state.data.custom_msgs || {};
+    return base.map(f => {
+      const cs = (customs[f.key] || []).map(m => ({ ...m, _custom: true }));
+      if (cs.length === 0) return f;
+      const items = [...f.items];
+      const withPos = cs.filter(c => typeof c.position === "number").sort((a,b)=>a.position-b.position);
+      const without = cs.filter(c => typeof c.position !== "number");
+      withPos.forEach(c => { const pos = Math.max(0, Math.min(items.length, c.position)); items.splice(pos, 0, c); });
+      without.forEach(c => items.push(c));
+      return { ...f, items };
+    });
+  }, [state.data]);
+
   if (state.loading) {
     return (
       <div className="min-h-screen bg-stone-50 flex items-center justify-center" style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
@@ -3633,11 +4106,31 @@ function PublicReviewPage({ token }) {
     );
   }
 
-  const { project, vars, edits, approval } = state.data;
-  const flows = getFlowsForStrategy(project.strategy);
+  const { project, vars, edits, approval, locked, signature } = state.data;
   const total = flows.reduce((s, f) => s + f.items.length, 0);
   const approvedCount = Object.values(approval || {}).filter(a => a?.status === "approved").length;
   const changesCount = Object.values(approval || {}).filter(a => a?.status === "changes").length;
+  const allApproved = total > 0 && approvedCount === total;
+
+  const signNow = async () => {
+    if (!savedReviewer || !reviewerName.trim()) { alert("Pon tu nombre antes de firmar."); return; }
+    if (!window.confirm("¿Firmar y cerrar la revisión? Después de firmar no se podrán modificar más aprobaciones.")) return;
+    try {
+      const r = await fetch(`${API}/review/${token}/sign`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ signer_name: reviewerName.trim(), signer_role: "" }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || "Error al firmar");
+      // Recargar para mostrar la firma
+      const r2 = await fetch(`${API}/review/${token}`);
+      const d2 = await r2.json();
+      setState({ loading: false, error: null, data: d2 });
+    } catch (e) {
+      alert("Error al firmar: " + e.message);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-stone-50" style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
@@ -3690,6 +4183,41 @@ function PublicReviewPage({ token }) {
           </div>
         </div>
 
+        {locked && signature && (
+          <div className="bg-gradient-to-br from-indigo-600 to-violet-700 rounded-xl p-5 text-white mb-5" data-testid="signature-card">
+            <div className="flex items-center gap-2 mb-2">
+              <div className="text-2xl">🔐</div>
+              <div>
+                <div className="text-[11px] uppercase tracking-widest opacity-75">Revisión firmada y cerrada</div>
+                <div className="text-lg font-bold">Firmado por {signature.signer_name}</div>
+              </div>
+            </div>
+            <div className="text-[11.5px] opacity-90 leading-relaxed">
+              Fecha: {signature.signed_at ? new Date(signature.signed_at).toLocaleString("es-ES") : "—"}<br/>
+              Hash SHA-256: <code className="font-mono text-[10px] bg-white/10 px-1.5 py-0.5 rounded break-all">{signature.signature_hash}</code>
+            </div>
+            <div className="text-[10.5px] opacity-75 mt-2">Este contenido ya no puede modificarse. El PDF descargable incluye la firma digital.</div>
+          </div>
+        )}
+
+        {allApproved && !locked && savedReviewer && (
+          <div className="bg-gradient-to-br from-amber-50 to-orange-50 border-2 border-amber-300 rounded-xl p-5 mb-5" data-testid="sign-cta-card">
+            <div className="flex items-start gap-3">
+              <div className="text-3xl">✨</div>
+              <div className="flex-1">
+                <div className="font-bold text-amber-900 text-base mb-1">¡Todos los mensajes aprobados!</div>
+                <div className="text-[12.5px] text-amber-900/80 mb-3 leading-relaxed">
+                  Puedes <strong>firmar y cerrar</strong> esta revisión. Se generará un PDF con firma digital (SHA-256) como constancia de aprobación. Después de firmar no podrás hacer más cambios.
+                </div>
+                <button onClick={signNow} data-testid="sign-close-btn"
+                  className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold bg-amber-600 text-white rounded-md hover:bg-amber-700">
+                  🔐 Firmar y cerrar revisión
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {flows.map(f => (
           <div key={f.key} className="mb-6">
             <div className="text-[10px] font-semibold tracking-widest text-stone-500 uppercase mb-3">{f.label}</div>
@@ -3723,18 +4251,24 @@ function PublicReviewPage({ token }) {
                       )}
                     </div>
                     <div className="px-4 py-3 border-t border-stone-200 bg-white flex items-center gap-2 flex-wrap">
-                      <button onClick={() => setApproval(mk, "approved")} disabled={isSaving}
-                        data-testid={`approve-btn-${mk}`}
-                        className={`text-xs px-3 py-1.5 rounded-md border font-medium transition ${app?.status === "approved" ? "bg-emerald-600 text-white border-emerald-600" : "bg-white border-emerald-300 text-emerald-700 hover:bg-emerald-50"} disabled:opacity-50`}>
-                        ✓ Aprobar
-                      </button>
-                      <button onClick={() => setCommentOpen(p => ({ ...p, [mk]: !p[mk] }))} disabled={isSaving}
-                        data-testid={`changes-btn-${mk}`}
-                        className={`text-xs px-3 py-1.5 rounded-md border font-medium transition ${app?.status === "changes" ? "bg-amber-600 text-white border-amber-600" : "bg-white border-amber-300 text-amber-700 hover:bg-amber-50"} disabled:opacity-50`}>
-                        ✎ Pedir cambios
-                      </button>
-                      {app && <button onClick={() => setApproval(mk, null)} disabled={isSaving} className="text-xs text-stone-500 hover:text-stone-900 disabled:opacity-50">Borrar estado</button>}
-                      {isSaving && <span className="text-[10px] text-stone-400">guardando…</span>}
+                      {locked ? (
+                        <div className="text-[11.5px] text-stone-500 italic">🔐 Revisión firmada y cerrada · no se admiten más cambios</div>
+                      ) : (
+                        <>
+                          <button onClick={() => setApproval(mk, "approved")} disabled={isSaving}
+                            data-testid={`approve-btn-${mk}`}
+                            className={`text-xs px-3 py-1.5 rounded-md border font-medium transition ${app?.status === "approved" ? "bg-emerald-600 text-white border-emerald-600" : "bg-white border-emerald-300 text-emerald-700 hover:bg-emerald-50"} disabled:opacity-50`}>
+                            ✓ Aprobar
+                          </button>
+                          <button onClick={() => setCommentOpen(p => ({ ...p, [mk]: !p[mk] }))} disabled={isSaving}
+                            data-testid={`changes-btn-${mk}`}
+                            className={`text-xs px-3 py-1.5 rounded-md border font-medium transition ${app?.status === "changes" ? "bg-amber-600 text-white border-amber-600" : "bg-white border-amber-300 text-amber-700 hover:bg-amber-50"} disabled:opacity-50`}>
+                            ✎ Pedir cambios
+                          </button>
+                          {app && <button onClick={() => setApproval(mk, null)} disabled={isSaving} className="text-xs text-stone-500 hover:text-stone-900 disabled:opacity-50">Borrar estado</button>}
+                          {isSaving && <span className="text-[10px] text-stone-400">guardando…</span>}
+                        </>
+                      )}
                     </div>
                     {isOpen && (
                       <div className="px-4 py-3 border-t border-stone-200 bg-stone-50">

@@ -217,6 +217,95 @@ async def whatsapp_send(body: WhatsAppSendBody):
 
 
 # ============================================================
+# EVOLUTION API — relay para envíos masivos a grupos/comunidades
+# Se usa SOLO en flows 'broadcasts' y 'venta_comunidad' para evitar
+# bans en Meta Cloud API. Self-hosted, las credenciales se pasan en la
+# petición (no se guardan en backend por seguridad; las guarda el cliente).
+# ============================================================
+class EvolutionSendBody(BaseModel):
+    server_url: str              # p.ej. https://evolution.miserver.com
+    api_key: str
+    instance: str                # nombre de la instancia
+    to: str                      # número E.164 (34612345678) o JID (xxx@g.us)
+    message: str
+    delay_ms: Optional[int] = 0  # delay before send
+
+
+@api_router.post("/evolution/send")
+async def evolution_send(body: EvolutionSendBody):
+    url = f"{body.server_url.rstrip('/')}/message/sendText/{body.instance}"
+    payload: Dict[str, Any] = {"number": body.to, "text": body.message}
+    if body.delay_ms and body.delay_ms > 0:
+        payload["delay"] = body.delay_ms
+    headers = {"apikey": body.api_key, "Content-Type": "application/json"}
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as hc:
+            r = await hc.post(url, json=payload, headers=headers)
+            data: Any = {}
+            try:
+                data = r.json()
+            except Exception:
+                data = {"raw": r.text[:500]}
+            return {"ok": r.status_code < 400, "status": r.status_code, "response": data, "endpoint": url}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error Evolution API: {e}")
+
+
+# ============================================================
+# REVIEW SIGN — firmado al 100% que cierra el link y genera hash
+# ============================================================
+import hashlib
+
+
+class ReviewSignBody(BaseModel):
+    signer_name: str
+    signer_role: Optional[str] = ""
+
+
+@api_router.post("/review/{token}/sign")
+async def review_sign(token: str, body: ReviewSignBody):
+    rec = await db.review_tokens.find_one({"token": token}, {"_id": 0})
+    if not rec:
+        raise HTTPException(status_code=404, detail="Link no válido")
+    if rec.get("locked"):
+        raise HTTPException(status_code=423, detail="La revisión ya está firmada y cerrada")
+
+    pid = rec["project_id"]
+    approval = await _read_storage(f"wa_editor:p:{pid}:approval") or {}
+    edits = await _read_storage(f"wa_editor:p:{pid}:edits") or {}
+
+    # Hash determinista del contenido firmado: aprovals + edits + signer + timestamp
+    now_iso = datetime.now(timezone.utc).isoformat()
+    canonical = _json.dumps(
+        {"approval": approval, "edits": edits, "signer": body.signer_name, "signed_at": now_iso},
+        sort_keys=True, ensure_ascii=False,
+    )
+    sig_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    await db.review_tokens.update_one(
+        {"token": token},
+        {"$set": {
+            "locked": True,
+            "signed_at": now_iso,
+            "signer_name": body.signer_name,
+            "signer_role": body.signer_role or "",
+            "signature_hash": sig_hash,
+            "signed_stats": {
+                "total_reviewed": len(approval),
+                "approved": sum(1 for v in approval.values() if (v or {}).get("status") == "approved"),
+                "changes": sum(1 for v in approval.values() if (v or {}).get("status") == "changes"),
+            },
+        }},
+    )
+    return {
+        "ok": True,
+        "signed_at": now_iso,
+        "signer_name": body.signer_name,
+        "signature_hash": sig_hash,
+    }
+
+
+# ============================================================
 # MAGIC REVIEW LINK — token público para que el cliente apruebe copys
 # Tokens viven en colección review_tokens. El cliente accede por
 # /review/:token en el frontend, que llama a estos endpoints.
@@ -290,12 +379,26 @@ async def review_get(token: str):
     vars_data = await _read_storage(f"wa_editor:p:{pid}:vars") or []
     edits_data = await _read_storage(f"wa_editor:p:{pid}:edits") or {}
     approval_data = await _read_storage(f"wa_editor:p:{pid}:approval") or {}
+    custom_msgs = await _read_storage(f"wa_editor:p:{pid}:custom_msgs") or {}
+
+    signature = None
+    if rec.get("locked"):
+        signature = {
+            "signed_at": rec.get("signed_at"),
+            "signer_name": rec.get("signer_name"),
+            "signer_role": rec.get("signer_role"),
+            "signature_hash": rec.get("signature_hash"),
+            "signed_stats": rec.get("signed_stats", {}),
+        }
 
     return {
         "project": safe_project,
         "vars": vars_data,
         "edits": edits_data,
         "approval": approval_data,
+        "custom_msgs": custom_msgs,
+        "locked": bool(rec.get("locked")),
+        "signature": signature,
     }
 
 
@@ -311,6 +414,8 @@ async def review_approve(token: str, body: ReviewApprovalBody):
     rec = await db.review_tokens.find_one({"token": token}, {"_id": 0})
     if not rec:
         raise HTTPException(status_code=404, detail="Link no válido")
+    if rec.get("locked"):
+        raise HTTPException(status_code=423, detail="La revisión ya está firmada y cerrada")
     pid = rec["project_id"]
     key = f"wa_editor:p:{pid}:approval"
     approval = await _read_storage(key) or {}
@@ -485,6 +590,35 @@ async def review_summary_pdf(token: str):
 
     if total == 0:
         story.append(Paragraph("Sin mensajes revisados todavía.", meta_style))
+
+    # Sección de firma si el link está firmado
+    if rec.get("locked"):
+        story.append(Spacer(1, 0.8*cm))
+        story.append(Paragraph("Firma digital de aprobación", h2_style))
+        sig_data = [
+            ["Firmado por", rec.get("signer_name", "—")],
+            ["Rol", rec.get("signer_role") or "—"],
+            ["Fecha y hora (UTC)", rec.get("signed_at", "—")],
+            ["Hash SHA-256", rec.get("signature_hash", "—")],
+            ["Estado", "🔐 Revisión cerrada y firmada"],
+        ]
+        tsig = Table(sig_data, colWidths=[4.5*cm, 12*cm])
+        tsig.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#F3F4F6")),
+            ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+            ("TEXTCOLOR", (0, 0), (-1, -1), colors.HexColor("#111827")),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#E5E7EB")),
+            ("PADDING", (0, 0), (-1, -1), 5),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ]))
+        story.append(tsig)
+        story.append(Spacer(1, 0.2*cm))
+        story.append(Paragraph(
+            "<font color='#6B7280' size='8'>Este hash certifica la integridad del contenido aprobado en el momento de la firma. "
+            "Cualquier modificación posterior al contenido invalidaría la firma.</font>",
+            meta_style,
+        ))
 
     doc.build(story)
     pdf_bytes = buf.getvalue()
