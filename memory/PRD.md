@@ -117,7 +117,28 @@ Editor colaborativo multi-proyecto de secuencias de mensajes de WhatsApp para ag
 - **ConnectionsPanel**: nuevo campo "Webhook deploy (🚀 Lanzar ahora)" (`n8nDeployWebhookUrl`)
 - **createSnapshot** ahora devuelve el ID del snapshot creado (necesario para pasarlo al wizard)
 
-### Iter 10 (21 feb 2026) — Fixes operativos pre-flight + Evolution UI
+### Iter 11 (21 feb 2026) — Sincronización directa de plantillas con Meta
+- **Backend — 2 endpoints nuevos** (server.py ~línea 1200):
+  - `POST /api/meta/templates/sync` — recibe project_id + items[{msg_key, flow_key, msg_id, copy, botones, creative_url}] + force_replace. Para cada item:
+    1. Categoriza `MARKETING` vs `UTILITY` via Claude Sonnet 4.5 (emergentintegrations) según el contenido del copy.
+    2. Convierte `{VAR}` → `{{1}}`,`{{2}}`... y guarda `params_mapping` ordenado.
+    3. Parsea botones `[BOTÓN] Texto\nLink: URL` → componentes Meta QUICK_REPLY / URL (máx 3).
+    4. Si hay creative_url público (no intake local) → añade header IMAGE/VIDEO/DOCUMENT.
+    5. Skip si ya existe con mismo nombre (salvo force_replace).
+    6. POST a `https://graph.facebook.com/v21.0/{WABA_ID}/message_templates` con el access_token del proyecto.
+    7. Devuelve {ok, total, created, skipped, failed, results[]} con motivo o error Meta por item.
+  - `GET /api/meta/templates/status/{project_id}` — hace pull del estado en Meta (APPROVED/PENDING/REJECTED + rejected_reason) y actualiza `templatesByMsg` persistente.
+- **Helpers backend nuevos**: `_categorize_copy_llm`, `_convert_vars_to_meta_placeholders`, `_parse_template_buttons`.
+- **Frontend — AutopilotPanel**:
+  - Función `syncMetaTemplates(forceReplace)` que recolecta automáticamente todos los mensajes de flujos Meta (no broadcasts/comunidad), incluye edits + creative URL + botones, y llama al endpoint.
+  - Función `refreshMetaTemplateStatus()` que hace pull y recarga.
+  - Botón nuevo en panel de acciones Autopilot: "📋 Sincronizar plantillas con Meta" (data-testid=`autopilot-sync-meta-templates`).
+  - Modal de progreso mientras corre (texto explicativo + barra animada).
+  - Modal de resultado post-sync con lista detallada: cada plantilla con estado ✓/⏭/✗, categoría detectada, meta_status, razón o error Meta. Incluye botón "Forzar reemplazo de las N saltadas" y "🔄 Refrescar estado desde Meta".
+- **Frontend — ConnectionsPanel Meta**: añadido hint "💡 Para crear/actualizar las plantillas Meta de este proyecto usa el botón del tab Autopilot" para que el usuario sepa dónde ir.
+- **Testing iter-11**: backend probado via curl — valida 400 sin credenciales, procesa el pipeline completo (LLM categorizer + var conversion + API call) y devuelve error Meta correctamente cuando el token es falso. Los 35/35 tests de iter-9 (test_iter7 + test_review + test_intake) siguen pasando sin regresiones.
+
+
 - **Fix A — tooltip Evolution API ya no tapa inputs**: movido el help-box "💡 JID del grupo..." ARRIBA de los campos API Key/Instancia (antes estaba entre inputs y botón). Cambiados los 3 `grid-cols-2` de ConnectionsPanel (Meta, n8n, Evolution) a `grid-cols-1 md:grid-cols-2` para que en viewports estrechos (iframe Emergent, ventana pequeña) los inputs se apilen verticalmente sin romper labels.
 - **Fix B — Aprobación del cliente con 100% ya no sale warn**: `AutopilotPanel` línea ~2170 ahora considera `approvalPct === 100` como "ok" (antes solo firma → "ok", 80-99% y 100% → "warn"). 100% = verde, 80-99% = amber, <80% = rojo.
 - **Fix C — Plantillas Meta auto-default en flujos 1-1**: introducida constante `EVOLUTION_FLOW_KEYS = Set("broadcasts","venta_comunidad")`. Todos los demás flujos (flujo_a, pre_webinar_1a1, venta_1a1, replay) asumen plantilla Meta por defecto sin necesidad de marcado manual. El checker pre-flight ahora cuenta TODOS los mensajes de flujos Meta como "templated". En el export/payload JSON se auto-genera `meta_template: {isTemplate:true, auto:true, name:"waflow_{flowKey}_{msgId}", language:"es"}` cuando no hay template explícito. Usuario sigue pudiendo personalizar (nombre Meta real, language, status) en la tarjeta del mensaje para sobrescribir el auto-default.

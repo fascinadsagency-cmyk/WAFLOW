@@ -1172,6 +1172,317 @@ def _detect_creative_type(content_type: str) -> str:
 
 
 # ============================================================
+# META WHATSAPP TEMPLATES SYNC — creación directa via Graph API
+# Itera los flujos Meta del proyecto, categoriza el copy con LLM (MARKETING/UTILITY),
+# convierte {VAR} a {{1}},{{2}}... y crea las plantillas en el WABA del usuario.
+# ============================================================
+import re as _re
+
+
+class MetaTemplatesSyncBody(BaseModel):
+    project_id: str
+    force_replace: bool = False
+
+
+async def _categorize_copy_llm(copy_text: str) -> str:
+    """LLM: MARKETING vs UTILITY según el contenido del copy."""
+    try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+    except Exception:
+        return "MARKETING"  # fallback seguro
+    api_key = os.environ.get("EMERGENT_LLM_KEY")
+    if not api_key:
+        return "MARKETING"
+    try:
+        chat = LlmChat(
+            api_key=api_key,
+            session_id=f"categorize_{uuid.uuid4()}",
+            system_message=(
+                "Eres clasificador de plantillas WhatsApp Business. Responde SOLO con 'MARKETING' o 'UTILITY'.\n"
+                "- UTILITY: confirmación de registro, recordatorio (sin promoción), actualización de estado, ticket,"
+                " código de acceso, confirmación de pedido, aviso técnico. Sin CTA de venta.\n"
+                "- MARKETING: promoción, descuento, nurturing, venta, invitación a evento con promesa de valor,"
+                " testimonio, urgencia. Contiene CTA de compra, acción comercial o engagement."
+            ),
+        ).with_model("anthropic", "claude-sonnet-4-5-20250929")
+        resp = await chat.send_message(UserMessage(text=f"Categoriza este mensaje WhatsApp:\n\n{copy_text[:600]}"))
+        resp_upper = (resp or "").strip().upper()
+        if "UTILITY" in resp_upper and "MARKETING" not in resp_upper:
+            return "UTILITY"
+        return "MARKETING"
+    except Exception:
+        return "MARKETING"
+
+
+def _convert_vars_to_meta_placeholders(text: str) -> (str, List[str]):
+    """Convierte {NOMBRE} {TITULO_WEBINAR} → {{1}} {{2}}... y devuelve (texto_convertido, lista_ordenada_de_nombres)."""
+    if not text:
+        return text or "", []
+    # Buscar en orden de aparición, únicos
+    seen: List[str] = []
+    def _repl(match):
+        name = match.group(1)
+        if name not in seen:
+            seen.append(name)
+        idx = seen.index(name) + 1
+        return f"{{{{{idx}}}}}"
+    converted = _re.sub(r"\{([A-Z_][A-Z0-9_]*)\}", _repl, text)
+    return converted, seen
+
+
+def _parse_template_buttons(botones_str: str) -> List[Dict[str, Any]]:
+    """Convierte '[BOTÓN] Texto\\nLink: https://...' a componentes Meta de tipo BUTTONS."""
+    if not botones_str or botones_str.startswith("N/A"):
+        return []
+    buttons: List[Dict[str, Any]] = []
+    lines = botones_str.split("\n")
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        m = _re.match(r"\[BOTÓN\]\s*(.+)", line)
+        if m:
+            text = m.group(1).strip()
+            # Mirar si la siguiente línea es Link:
+            url = None
+            if i + 1 < len(lines):
+                nxt = lines[i + 1].strip()
+                m2 = _re.match(r"Link:\s*(https?://\S+)", nxt)
+                if m2:
+                    url = m2.group(1)
+                    i += 1
+            if url:
+                buttons.append({"type": "URL", "text": text[:25], "url": url[:2000]})
+            else:
+                buttons.append({"type": "QUICK_REPLY", "text": text[:25]})
+            # Meta permite máximo 3 QUICK_REPLY o 2 URL; cortar a 3 en total
+            if len(buttons) >= 3:
+                break
+        i += 1
+    return buttons
+
+
+EVOLUTION_FLOW_KEYS_SET = {"broadcasts", "venta_comunidad"}
+
+
+def _flatten_project_meta_messages(project_id: str, strategy: str, custom_msgs: Dict[str, List[Dict]], edits: Dict[str, str]) -> List[Dict[str, Any]]:
+    """Obtiene todos los mensajes de flujos Meta del proyecto con su copy editado aplicado."""
+    # Importar los flujos base (no podemos importar el front, así que replicamos la estructura mínima).
+    # Nota: en MVP usamos el copy que viene editado ya; si no hay edits, el cliente debe enviar el copy via otra ruta.
+    # Aquí esperamos que el frontend nos mande los mensajes directamente en el body.
+    return []
+
+
+class MetaTemplateSyncItemBody(BaseModel):
+    msg_key: str            # "flujo_a:M1"
+    flow_key: str
+    msg_id: str
+    copy: str               # copy editado final (sin reemplazar variables)
+    botones: Optional[str] = None
+    creative_url: Optional[str] = None  # URL pública o /api/intake/file/{id} para header
+
+
+class MetaTemplatesSyncFullBody(BaseModel):
+    project_id: str
+    items: List[MetaTemplateSyncItemBody]
+    force_replace: bool = False
+
+
+@api_router.post("/meta/templates/sync")
+async def meta_templates_sync(body: MetaTemplatesSyncFullBody):
+    """Sincroniza plantillas Meta para un proyecto. Itera los items, categoriza con LLM,
+    convierte variables, y crea cada plantilla en el WABA vía Graph API.
+    """
+    # Leer credenciales Meta del proyecto
+    connections = await _read_storage(f"wa_editor:p:{body.project_id}:connections") or {}
+    waba_id = connections.get("wabaId")
+    access_token = connections.get("accessToken")
+    if not waba_id or not access_token:
+        raise HTTPException(status_code=400, detail="Faltan credenciales Meta: WABA ID y/o Access Token en Conexiones.")
+
+    # Leer plantillas ya creadas (templatesByMsg)
+    existing_templates_state = await _read_storage(f"wa_editor:p:{body.project_id}:templates") or {}
+
+    results: List[Dict[str, Any]] = []
+    total = len(body.items)
+    created = 0
+    skipped = 0
+    failed = 0
+
+    async with httpx.AsyncClient(timeout=30.0) as hc:
+        # 1) Listar plantillas existentes en Meta para detectar duplicados
+        existing_names = set()
+        try:
+            r = await hc.get(
+                f"https://graph.facebook.com/v21.0/{waba_id}/message_templates",
+                params={"fields": "name,status", "limit": 200},
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            if r.status_code < 400:
+                for tpl in (r.json().get("data") or []):
+                    existing_names.add(tpl.get("name"))
+        except Exception:
+            pass
+
+        for it in body.items:
+            tpl_name = f"waflow_{it.flow_key}_{it.msg_id}".lower()
+            tpl_name = _re.sub(r"[^a-z0-9_]", "_", tpl_name)[:512]
+
+            # Skip si existe y no hay force_replace
+            if tpl_name in existing_names and not body.force_replace:
+                results.append({"msg_key": it.msg_key, "template_name": tpl_name, "ok": True, "status": "skipped", "reason": "Ya existe en Meta"})
+                skipped += 1
+                continue
+
+            # Categorizar con LLM
+            category = await _categorize_copy_llm(it.copy)
+
+            # Convertir variables
+            body_text, var_names = _convert_vars_to_meta_placeholders(it.copy)
+
+            # Truncar a 1024 chars (límite Meta)
+            if len(body_text) > 1024:
+                body_text = body_text[:1021] + "..."
+
+            components: List[Dict[str, Any]] = []
+
+            # Header media si hay creative_url pública (skip /api/ locales porque Meta no puede acceder)
+            header_example = None
+            if it.creative_url and it.creative_url.startswith(("http://", "https://")) and "/api/intake/file/" not in it.creative_url:
+                # Determinar tipo por extensión simple
+                url_lower = it.creative_url.lower()
+                if any(url_lower.endswith(x) for x in [".jpg", ".jpeg", ".png", ".webp"]):
+                    components.append({
+                        "type": "HEADER", "format": "IMAGE",
+                        "example": {"header_handle": [it.creative_url]},
+                    })
+                elif any(url_lower.endswith(x) for x in [".mp4", ".mov"]):
+                    components.append({
+                        "type": "HEADER", "format": "VIDEO",
+                        "example": {"header_handle": [it.creative_url]},
+                    })
+                elif url_lower.endswith(".pdf"):
+                    components.append({
+                        "type": "HEADER", "format": "DOCUMENT",
+                        "example": {"header_handle": [it.creative_url]},
+                    })
+
+            # Body
+            body_component: Dict[str, Any] = {"type": "BODY", "text": body_text}
+            if var_names:
+                body_component["example"] = {"body_text": [["ejemplo_" + v.lower() for v in var_names]]}
+            components.append(body_component)
+
+            # Footer fijo con marca
+            components.append({"type": "FOOTER", "text": "Powered by WAFLOW"})
+
+            # Buttons si aplica
+            btns = _parse_template_buttons(it.botones or "")
+            if btns:
+                components.append({"type": "BUTTONS", "buttons": btns})
+
+            payload = {
+                "name": tpl_name,
+                "language": "es",
+                "category": category,
+                "components": components,
+            }
+
+            # Delete si force_replace y existe
+            if body.force_replace and tpl_name in existing_names:
+                try:
+                    await hc.delete(
+                        f"https://graph.facebook.com/v21.0/{waba_id}/message_templates",
+                        params={"name": tpl_name},
+                        headers={"Authorization": f"Bearer {access_token}"},
+                    )
+                except Exception:
+                    pass
+
+            # Crear
+            try:
+                r = await hc.post(
+                    f"https://graph.facebook.com/v21.0/{waba_id}/message_templates",
+                    json=payload,
+                    headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+                )
+                data = r.json() if r.content else {}
+                if r.status_code < 400:
+                    meta_id = data.get("id")
+                    meta_status = data.get("status") or "PENDING"
+                    results.append({
+                        "msg_key": it.msg_key, "template_name": tpl_name,
+                        "ok": True, "status": "created",
+                        "meta_id": meta_id, "meta_status": meta_status, "category": category,
+                        "params_mapping": var_names,
+                    })
+                    # Persistir en templatesByMsg
+                    existing_templates_state[it.msg_key] = {
+                        "isTemplate": True, "auto": False,
+                        "name": tpl_name, "language": "es", "category": category,
+                        "status": meta_status, "meta_id": meta_id,
+                        "params_mapping": var_names, "synced_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                    created += 1
+                else:
+                    err_msg = (data.get("error") or {}).get("message") or str(data)[:300]
+                    results.append({"msg_key": it.msg_key, "template_name": tpl_name, "ok": False, "status": "error", "error": err_msg})
+                    failed += 1
+            except Exception as e:
+                results.append({"msg_key": it.msg_key, "template_name": tpl_name, "ok": False, "status": "error", "error": str(e)[:300]})
+                failed += 1
+
+    # Guardar estado actualizado
+    await _write_storage(f"wa_editor:p:{body.project_id}:templates", existing_templates_state)
+
+    return {"ok": True, "total": total, "created": created, "skipped": skipped, "failed": failed, "results": results}
+
+
+@api_router.get("/meta/templates/status/{project_id}")
+async def meta_templates_refresh_status(project_id: str):
+    """Pull del estado actual de cada plantilla WAFLOW en el WABA del proyecto."""
+    connections = await _read_storage(f"wa_editor:p:{project_id}:connections") or {}
+    waba_id = connections.get("wabaId")
+    access_token = connections.get("accessToken")
+    if not waba_id or not access_token:
+        raise HTTPException(status_code=400, detail="Faltan credenciales Meta.")
+
+    templates_state = await _read_storage(f"wa_editor:p:{project_id}:templates") or {}
+
+    async with httpx.AsyncClient(timeout=15.0) as hc:
+        try:
+            r = await hc.get(
+                f"https://graph.facebook.com/v21.0/{waba_id}/message_templates",
+                params={"fields": "name,status,rejected_reason,category,id", "limit": 200},
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Meta API error: {e}")
+        if r.status_code >= 400:
+            err = r.json().get("error", {}).get("message", r.text[:200])
+            raise HTTPException(status_code=r.status_code, detail=f"Meta API: {err}")
+        meta_data = {tpl.get("name"): tpl for tpl in (r.json().get("data") or [])}
+
+    # Actualizar cada template con nuevo status
+    updated = 0
+    for msg_key, tpl_info in templates_state.items():
+        name = tpl_info.get("name") if isinstance(tpl_info, dict) else None
+        if not name or name not in meta_data:
+            continue
+        meta_tpl = meta_data[name]
+        new_status = meta_tpl.get("status", tpl_info.get("status"))
+        if new_status != tpl_info.get("status"):
+            updated += 1
+        tpl_info["status"] = new_status
+        tpl_info["meta_id"] = meta_tpl.get("id", tpl_info.get("meta_id"))
+        tpl_info["rejected_reason"] = meta_tpl.get("rejected_reason")
+        tpl_info["last_status_check"] = datetime.now(timezone.utc).isoformat()
+        templates_state[msg_key] = tpl_info
+
+    await _write_storage(f"wa_editor:p:{project_id}:templates", templates_state)
+    return {"ok": True, "updated": updated, "total_meta": len(meta_data), "tracked": len(templates_state)}
+
+
+# ============================================================
 # ROOT
 # ============================================================
 @api_router.get("/")

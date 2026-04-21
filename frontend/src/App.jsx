@@ -1888,13 +1888,16 @@ function ConnectionsPanel({ conn, setConn, projectName, notifyConfig, setNotifyC
           <Field label="App Secret" value={conn.appSecret} onChange={v => update("appSecret", v)} mono password />
           <Field label="Webhook Verify Token" value={conn.webhookVerifyToken} onChange={v => update("webhookVerifyToken", v)} mono />
         </div>
-        <div className="mt-3 flex items-center gap-2">
+        <div className="mt-3 flex items-center gap-2 flex-wrap">
           <button onClick={() => testConnection("meta", { phone_number_id: conn.phoneNumberId, access_token: conn.accessToken }, "meta")}
             data-testid="test-meta-btn"
             disabled={testing.meta}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-sky-600 text-white rounded-md hover:bg-sky-700 disabled:opacity-50">
             <Plug size={12} /> Probar conexión Meta
           </button>
+          <div className="text-[10.5px] text-stone-500">
+            💡 Para crear/actualizar las plantillas Meta de este proyecto usa el botón <strong>"Sincronizar plantillas con Meta"</strong> del tab <strong>Autopilot</strong>.
+          </div>
         </div>
         <TestBadge k="meta" />
       </div>
@@ -2131,6 +2134,7 @@ function AutopilotPanel({
   const [generatingWf, setGeneratingWf] = useState(false);
   const [launchWizard, setLaunchWizard] = useState(null); // {workflowJson, snapshotId}
   const [launchStatus, setLaunchStatus] = useState(null); // {active, launch, stats, delivery_rate}
+  const [metaSync, setMetaSync] = useState(null); // { running, phase, total, done, results?, forceReplace }
 
   // Fetch review signature state
   useEffect(() => {
@@ -2244,6 +2248,54 @@ function AutopilotPanel({
     return () => { stopped = true; if (timer) clearInterval(timer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project.id, project.status]);
+
+  // Sincronizar plantillas Meta: crear/actualizar en WABA del usuario via Graph API
+  const syncMetaTemplates = async (forceReplace = false) => {
+    // Recolectar mensajes de flujos Meta (no broadcasts, no venta_comunidad)
+    const items = [];
+    flows.forEach(f => {
+      if (f.key === "broadcasts" || f.key === "venta_comunidad") return;
+      f.items.forEach((m, i) => {
+        const mk = `${f.key}:${m.id || i}`;
+        const copy = edits[mk] ?? m.copy;
+        const creative = creatives.find(c => c.messageKey === mk);
+        items.push({
+          msg_key: mk, flow_key: f.key, msg_id: (m.id || `msg${i}`).toString(),
+          copy, botones: m.botones || null,
+          creative_url: creative?.url || null,
+        });
+      });
+    });
+    if (items.length === 0) {
+      alert("No hay mensajes de flujos Meta para sincronizar.");
+      return;
+    }
+    setMetaSync({ running: true, phase: "Sincronizando con Meta...", total: items.length, done: 0, forceReplace });
+    try {
+      const r = await fetch(`${API}/meta/templates/sync`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ project_id: project.id, items, force_replace: forceReplace }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || "Error del servidor");
+      setMetaSync({ running: false, phase: "completed", total: data.total, done: data.total, results: data.results, summary: { created: data.created, skipped: data.skipped, failed: data.failed }, forceReplace });
+    } catch (e) {
+      setMetaSync({ running: false, phase: "error", error: e.message, forceReplace });
+    }
+  };
+
+  const refreshMetaTemplateStatus = async () => {
+    try {
+      const r = await fetch(`${API}/meta/templates/status/${project.id}`);
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || "Error");
+      alert(`Estado refrescado: ${data.updated} plantillas actualizadas de ${data.tracked} sincronizadas (${data.total_meta} totales en tu WABA).`);
+      window.location.reload(); // forzar recarga de templatesByMsg desde storage
+    } catch (e) {
+      alert("Error refrescando estado: " + e.message);
+    }
+  };
 
   // Construye el objeto workflow n8n (compartido por export y launch)
   const buildWorkflowJson = () => {
@@ -2533,6 +2585,23 @@ function AutopilotPanel({
             <GitCommit size={16} className="text-sky-600" />
           </button>
 
+          <button onClick={() => syncMetaTemplates(false)} disabled={metaSync?.running}
+            data-testid="autopilot-sync-meta-templates"
+            className="flex items-center gap-3 p-4 bg-gradient-to-br from-sky-50 to-blue-50 border-2 border-sky-300 rounded-lg hover:border-sky-500 text-left disabled:opacity-50">
+            <div className="text-2xl">📋</div>
+            <div className="flex-1">
+              <div className="text-sm font-bold text-sky-900">
+                {metaSync?.running ? "Sincronizando..." : "Sincronizar plantillas con Meta"}
+              </div>
+              <div className="text-[11px] text-sky-700">
+                {metaSync?.running
+                  ? `${metaSync.done || 0} / ${metaSync.total || 0}`
+                  : "Crea/actualiza las plantillas Meta (auto-detecta MARKETING/UTILITY con IA)"}
+              </div>
+            </div>
+            <Cloud size={16} className="text-sky-600" />
+          </button>
+
           {reviewSignature?.token && (
             <a href={`${window.location.origin}/review/${reviewSignature.token}`} target="_blank" rel="noreferrer"
               data-testid="autopilot-open-review"
@@ -2606,6 +2675,96 @@ function AutopilotPanel({
           onDeployed={() => { /* polling empezará al próximo ciclo */ }}
           onClose={() => setLaunchWizard(null)}
         />
+      )}
+
+      {/* Meta Templates Sync result modal */}
+      {metaSync && !metaSync.running && (metaSync.results || metaSync.error) && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={() => setMetaSync(null)}>
+          <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[85vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()} data-testid="meta-sync-result-modal">
+            <div className="px-6 py-4 bg-gradient-to-r from-sky-50 to-blue-50 border-b border-sky-200">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="text-2xl">📋</div>
+                  <div>
+                    <div className="text-base font-bold text-sky-900">Sincronización con Meta</div>
+                    {metaSync.summary && (
+                      <div className="text-[11.5px] text-sky-700">
+                        ✓ {metaSync.summary.created} creadas · ⏭ {metaSync.summary.skipped} saltadas · ✗ {metaSync.summary.failed} errores
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <button onClick={() => setMetaSync(null)} className="text-stone-500 hover:text-stone-900">
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto p-5">
+              {metaSync.error && (
+                <div className="text-red-800 bg-red-50 border border-red-200 rounded-lg p-4 text-sm">
+                  <strong>Error:</strong> {metaSync.error}
+                </div>
+              )}
+              {metaSync.results && (
+                <div className="space-y-2">
+                  {metaSync.results.map((r, i) => (
+                    <div key={`meta-res-${i}-${r.msg_key}`}
+                      className={`flex items-start gap-3 p-3 rounded-md border ${
+                        r.status === "created" ? "bg-emerald-50 border-emerald-200"
+                        : r.status === "skipped" ? "bg-stone-50 border-stone-200"
+                        : "bg-red-50 border-red-200"
+                      }`}>
+                      <div className="text-lg">
+                        {r.status === "created" ? "✓" : r.status === "skipped" ? "⏭" : "✗"}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-[12px] font-mono font-semibold text-stone-900 truncate">{r.template_name}</div>
+                        <div className="text-[10.5px] text-stone-600">
+                          {r.msg_key}
+                          {r.category && <span className="ml-2 text-sky-700">· {r.category}</span>}
+                          {r.meta_status && <span className="ml-2 text-amber-700">· {r.meta_status}</span>}
+                        </div>
+                        {r.reason && <div className="text-[10.5px] text-stone-500 mt-0.5">{r.reason}</div>}
+                        {r.error && <div className="text-[10.5px] text-red-700 mt-0.5"><strong>Error Meta:</strong> {r.error}</div>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="px-6 py-3 bg-stone-50 border-t border-stone-200 flex items-center justify-between gap-2 flex-wrap">
+              <button onClick={refreshMetaTemplateStatus}
+                data-testid="meta-refresh-status-btn"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-white border border-stone-300 rounded-md hover:bg-stone-100">
+                🔄 Refrescar estado desde Meta
+              </button>
+              {metaSync.summary?.skipped > 0 && !metaSync.forceReplace && (
+                <button onClick={() => { setMetaSync(null); syncMetaTemplates(true); }}
+                  data-testid="meta-force-replace-btn"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-amber-600 text-white rounded-md hover:bg-amber-700">
+                  ⚠ Forzar reemplazo de las {metaSync.summary.skipped} saltadas
+                </button>
+              )}
+              <button onClick={() => setMetaSync(null)} className="px-4 py-1.5 text-sm font-medium bg-stone-900 text-white rounded-md hover:bg-stone-700">
+                Cerrar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Meta Templates Sync running progress */}
+      {metaSync?.running && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" data-testid="meta-sync-progress-modal">
+          <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6 text-center">
+            <div className="text-3xl mb-2">📋</div>
+            <div className="text-sm font-bold text-stone-900 mb-1">Sincronizando plantillas con Meta</div>
+            <div className="text-[12px] text-stone-600 mb-4">Categorizando con IA, convirtiendo variables y creando plantillas en tu WABA. Puede tardar 20-60 segundos…</div>
+            <div className="w-full bg-stone-100 rounded-full h-2 overflow-hidden">
+              <div className="h-full bg-sky-600 animate-pulse" style={{ width: "65%" }} />
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
