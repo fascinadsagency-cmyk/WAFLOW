@@ -217,6 +217,66 @@ async def whatsapp_send(body: WhatsAppSendBody):
 
 
 # ============================================================
+# TEST CONNECTION — validar credenciales antes de lanzar
+# ============================================================
+class TestConnectionBody(BaseModel):
+    type: str  # "meta" | "evolution" | "n8n_webhook"
+    config: Dict[str, Any]
+
+
+@api_router.post("/test-connection")
+async def test_connection(body: TestConnectionBody):
+    try:
+        async with httpx.AsyncClient(timeout=12.0) as hc:
+            if body.type == "meta":
+                # GET https://graph.facebook.com/v21.0/{phone_number_id}?fields=verified_name,display_phone_number
+                phone_id = body.config.get("phone_number_id") or body.config.get("phoneNumberId")
+                token = body.config.get("access_token") or body.config.get("accessToken")
+                if not phone_id or not token:
+                    return {"ok": False, "error": "Faltan phone_number_id o access_token"}
+                r = await hc.get(
+                    f"https://graph.facebook.com/v21.0/{phone_id}",
+                    params={"fields": "verified_name,display_phone_number,quality_rating"},
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                data = r.json() if r.content else {}
+                if r.status_code < 400:
+                    return {"ok": True, "detail": f"Número verificado: {data.get('display_phone_number', '—')} · {data.get('verified_name', '—')} · calidad {data.get('quality_rating', '—')}"}
+                return {"ok": False, "error": f"Meta API: {data.get('error', {}).get('message', r.text[:200])}"}
+
+            elif body.type == "evolution":
+                # GET {server}/instance/connectionState/{instance}
+                server = (body.config.get("server_url") or "").rstrip("/")
+                apikey = body.config.get("api_key")
+                instance = body.config.get("instance")
+                if not all([server, apikey, instance]):
+                    return {"ok": False, "error": "Faltan server_url, api_key o instance"}
+                r = await hc.get(
+                    f"{server}/instance/connectionState/{instance}",
+                    headers={"apikey": apikey},
+                )
+                data = r.json() if r.content else {}
+                if r.status_code < 400:
+                    state = (data.get("instance") or {}).get("state") or data.get("state", "unknown")
+                    return {"ok": state == "open", "detail": f"Instancia '{instance}' · estado: {state}"}
+                return {"ok": False, "error": f"Evolution: HTTP {r.status_code} — {str(data)[:200]}"}
+
+            elif body.type == "n8n_webhook":
+                url = body.config.get("url")
+                if not url:
+                    return {"ok": False, "error": "Falta URL del webhook"}
+                r = await hc.post(url, json={"_waflow_test": True, "ts": datetime.now(timezone.utc).isoformat()})
+                return {"ok": r.status_code < 400, "detail": f"HTTP {r.status_code} — webhook responde"}
+
+            else:
+                return {"ok": False, "error": f"Tipo desconocido: {body.type}"}
+    except httpx.TimeoutException:
+        return {"ok": False, "error": "Timeout. ¿El servidor está online?"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
+
+
+# ============================================================
 # EVOLUTION API — relay para envíos masivos a grupos/comunidades
 # Se usa SOLO en flows 'broadcasts' y 'venta_comunidad' para evitar
 # bans en Meta Cloud API. Self-hosted, las credenciales se pasan en la

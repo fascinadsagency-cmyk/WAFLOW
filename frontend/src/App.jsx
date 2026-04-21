@@ -740,6 +740,7 @@ function MessageCard({
   onAttachCreative, onRemoveCreativeAssoc,
   isCustom = false, onRemoveCustom = null,
   canUseEvolution = false, evolutionConfig = null, onEvolutionSend = null,
+  onMetaTestSend = null, metaConfig = null,
 }) {
   const [expanded, setExpanded] = useState(true);
   const [editing, setEditing] = useState(false);
@@ -749,6 +750,7 @@ function MessageCard({
   const [showVarPicker, setShowVarPicker] = useState(false);
   const [showAttachModal, setShowAttachModal] = useState(false);
   const [showEvoSend, setShowEvoSend] = useState(false);
+  const [showMetaSend, setShowMetaSend] = useState(false);
   const [newComment, setNewComment] = useState("");
   const textareaRef = useRef(null);
 
@@ -855,6 +857,14 @@ function MessageCard({
                       title="Enviar ahora vía Evolution API (broadcasts / comunidad)"
                       className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-300 rounded-md hover:bg-emerald-100">
                       <Send size={12} /> Enviar ahora
+                    </button>
+                  )}
+                  {!canUseEvolution && onMetaTestSend && (
+                    <button onClick={e => { e.stopPropagation(); setShowMetaSend(true); }}
+                      data-testid={`meta-test-btn-${flowKey}-${msg.id || index}`}
+                      title="Enviar test a un número via Meta API"
+                      className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-sky-700 bg-sky-50 border border-sky-300 rounded-md hover:bg-sky-100">
+                      <Send size={12} /> Test Meta
                     </button>
                   )}
                   {isCustom && onRemoveCustom && (
@@ -1112,6 +1122,18 @@ function MessageCard({
           evolutionConfig={evolutionConfig}
           onSend={onEvolutionSend}
           onClose={() => setShowEvoSend(false)}
+          flowKey={flowKey}
+          msgKey={msgKey}
+        />
+      )}
+      {showMetaSend && onMetaTestSend && (
+        <MetaTestSendModal
+          msg={msg}
+          rendered={rendered}
+          metaConfig={metaConfig}
+          templateMeta={templateMeta}
+          onSend={onMetaTestSend}
+          onClose={() => setShowMetaSend(false)}
           flowKey={flowKey}
           msgKey={msgKey}
         />
@@ -1755,6 +1777,35 @@ function CreativesPanel({ creatives, setCreatives, allMessages }) {
 // CONEXIONES
 // ====================================================================
 function ConnectionsPanel({ conn, setConn, projectName, notifyConfig, setNotifyConfig }) {
+  const [testResult, setTestResult] = useState({});
+  const [testing, setTesting] = useState({});
+  const testConnection = async (type, config, key) => {
+    setTesting(s => ({ ...s, [key]: true }));
+    setTestResult(r => ({ ...r, [key]: null }));
+    try {
+      const res = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/test-connection`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type, config }),
+      });
+      const data = await res.json();
+      setTestResult(r => ({ ...r, [key]: data }));
+    } catch (e) {
+      setTestResult(r => ({ ...r, [key]: { ok: false, error: String(e) } }));
+    } finally {
+      setTesting(s => ({ ...s, [key]: false }));
+    }
+  };
+  const TestBadge = ({ k }) => {
+    const r = testResult[k];
+    if (testing[k]) return <span className="text-[11px] text-stone-500 ml-2">Probando...</span>;
+    if (!r) return null;
+    return (
+      <div className={`text-[11px] mt-2 p-2 rounded border ${r.ok ? "bg-emerald-50 border-emerald-200 text-emerald-900" : "bg-red-50 border-red-200 text-red-900"}`}>
+        {r.ok ? "✅ " : "❌ "}{r.detail || r.error || (r.ok ? "OK" : "Error")}
+      </div>
+    );
+  };
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
   const [testPhone, setTestPhone] = useState("");
@@ -1825,6 +1876,15 @@ function ConnectionsPanel({ conn, setConn, projectName, notifyConfig, setNotifyC
           <Field label="App Secret" value={conn.appSecret} onChange={v => update("appSecret", v)} mono password />
           <Field label="Webhook Verify Token" value={conn.webhookVerifyToken} onChange={v => update("webhookVerifyToken", v)} mono />
         </div>
+        <div className="mt-3 flex items-center gap-2">
+          <button onClick={() => testConnection("meta", { phone_number_id: conn.phoneNumberId, access_token: conn.accessToken }, "meta")}
+            data-testid="test-meta-btn"
+            disabled={testing.meta}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-sky-600 text-white rounded-md hover:bg-sky-700 disabled:opacity-50">
+            <Plug size={12} /> Probar conexión Meta
+          </button>
+        </div>
+        <TestBadge k="meta" />
       </div>
       <div className="bg-white border border-stone-200 rounded-lg p-5">
         <div className="flex items-center gap-2 mb-4">
@@ -1864,6 +1924,15 @@ function ConnectionsPanel({ conn, setConn, projectName, notifyConfig, setNotifyC
           <div className="text-[10.5px] text-stone-500 bg-stone-50 border border-stone-200 rounded p-2 leading-relaxed">
             💡 Para enviar a una <strong>comunidad/grupo</strong> WhatsApp usa el JID del grupo (formato <code className="font-mono">1203630...@g.us</code>). Para número individual, formato E.164 sin <code className="font-mono">+</code>.
           </div>
+          <div className="mt-1 flex items-center gap-2">
+            <button onClick={() => testConnection("evolution", { server_url: conn.evolution?.server_url, api_key: conn.evolution?.api_key, instance: conn.evolution?.instance }, "evolution")}
+              data-testid="test-evolution-btn"
+              disabled={testing.evolution}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-emerald-600 text-white rounded-md hover:bg-emerald-700 disabled:opacity-50">
+              <Plug size={12} /> Probar conexión Evolution
+            </button>
+          </div>
+          <TestBadge k="evolution" />
         </div>
       </div>
 
@@ -4392,8 +4461,9 @@ function ProjectWorkspace({ project, onBack, me, onUpdateProject }) {
     logHistory("creó snapshot", label);
     return snap.id;
   };
-  const restoreSnapshot = (s) => {
-    if (!confirm(`¿Restaurar proyecto al estado "${s.label}"?`)) return;
+  const askConfirm = useConfirm();
+  const restoreSnapshot = async (s) => {
+    if (!(await askConfirm({ title: "Restaurar snapshot", message: `¿Restaurar el proyecto al estado "${s.label}"? Se reemplazan variables, ediciones, creativos, conexiones, aprobaciones y comentarios.`, confirmLabel: "Restaurar", danger: true }))) return;
     setVars(s.data.vars);
     setEdits(s.data.edits);
     setCreatives(s.data.creatives);
@@ -4405,10 +4475,13 @@ function ProjectWorkspace({ project, onBack, me, onUpdateProject }) {
     setTemplatesByMsg(s.data.templatesByMsg || {});
     logHistory("restauró snapshot", s.label);
   };
-  const deleteSnapshot = (id) => { if (confirm("¿Eliminar snapshot?")) setSnapshots(s => s.filter(x => x.id !== id)); };
+  const deleteSnapshot = async (id) => {
+    if (!(await askConfirm({ title: "Eliminar snapshot", message: "¿Eliminar esta versión guardada?", confirmLabel: "Eliminar", danger: true }))) return;
+    setSnapshots(s => s.filter(x => x.id !== id));
+  };
 
-  const resetVars = () => {
-    if (!confirm("¿Restaurar variables originales de esta estrategia?")) return;
+  const resetVars = async () => {
+    if (!(await askConfirm({ title: "Restaurar variables originales", message: "Perderás los valores custom de las variables editables de esta estrategia.", confirmLabel: "Restaurar", danger: true }))) return;
     setVars(getDefaultVarsForStrategy(project.strategy));
   };
 
@@ -4645,6 +4718,7 @@ function ProjectWorkspace({ project, onBack, me, onUpdateProject }) {
 // No requiere login. Solo lectura del copy + aprobar / pedir cambios.
 // ====================================================================
 function PublicReviewPage({ token }) {
+  const confirm = useConfirm();
   const [state, setState] = useState({ loading: true, error: null, data: null });
   const [reviewerName, setReviewerName] = useState("");
   const [savedReviewer, setSavedReviewer] = useState(false);
@@ -4751,7 +4825,7 @@ function PublicReviewPage({ token }) {
 
   const signNow = async () => {
     if (!savedReviewer || !reviewerName.trim()) { alert("Pon tu nombre antes de firmar."); return; }
-    if (!window.confirm("¿Firmar y cerrar la revisión? Después de firmar no se podrán modificar más aprobaciones.")) return;
+    if (!(await confirm({ title: "Firmar y cerrar la revisión", message: "Después de firmar no se podrán modificar más aprobaciones ni pedir cambios. Se generará un hash digital como constancia.", confirmLabel: "Firmar y cerrar", danger: true }))) return;
     try {
       const r = await fetch(`${API}/review/${token}/sign`, {
         method: "POST",
@@ -4972,6 +5046,26 @@ function ConfirmDialog({ open, title, message, confirmLabel = "Confirmar", cance
   );
 }
 
+// Contexto global para poder hacer `await confirm({...})` desde cualquier componente
+const ConfirmContext = React.createContext(null);
+export const useConfirm = () => React.useContext(ConfirmContext);
+function ConfirmProvider({ children }) {
+  const [state, setState] = useState(null);
+  const ask = React.useCallback((opts) => new Promise(resolve => {
+    setState({
+      ...opts,
+      onConfirm: () => { setState(null); resolve(true); },
+      onCancel: () => { setState(null); resolve(false); },
+    });
+  }), []);
+  return (
+    <ConfirmContext.Provider value={ask}>
+      {children}
+      <ConfirmDialog open={!!state} {...(state || {})} />
+    </ConfirmContext.Provider>
+  );
+}
+
 // ====================================================================
 // APP RAÍZ — gestión proyectos
 // ====================================================================
@@ -5093,6 +5187,26 @@ export default function App() {
   const reviewMatch = typeof window !== "undefined"
     ? window.location.pathname.match(/^\/review\/([A-Za-z0-9_-]+)\/?$/)
     : null;
-  if (reviewMatch) return <PublicReviewPage token={reviewMatch[1]} />;
-  return <MainApp />;
+  return (
+    <ConfirmProvider>
+      {reviewMatch ? <PublicReviewPage token={reviewMatch[1]} /> : <MainApp />}
+    </ConfirmProvider>
+  );
+}
+irmDialog(null)}
+      />
+    </>
+  );
+}
+
+// Router manual: /review/:token → PublicReviewPage, resto → MainApp
+export default function App() {
+  const reviewMatch = typeof window !== "undefined"
+    ? window.location.pathname.match(/^\/review\/([A-Za-z0-9_-]+)\/?$/)
+    : null;
+  return (
+    <ConfirmProvider>
+      {reviewMatch ? <PublicReviewPage token={reviewMatch[1]} /> : <MainApp />}
+    </ConfirmProvider>
+  );
 }
