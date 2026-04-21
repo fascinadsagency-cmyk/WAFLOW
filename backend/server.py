@@ -10,6 +10,7 @@ from typing import List, Optional, Any, Dict
 import uuid
 from datetime import datetime, timezone
 import httpx
+import re as _re
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -214,6 +215,71 @@ async def whatsapp_send(body: WhatsAppSendBody):
             return {"ok": r.status_code < 400, "status": r.status_code, "response": data}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error Meta API: {e}")
+
+
+class WhatsAppTemplateSendBody(BaseModel):
+    project_id: str
+    template_name: str
+    language: str = "es"
+    to_phone: str  # E.164 sin +
+    params: List[str] = []  # valores ordenados para {{1}}, {{2}}...
+    header_media_url: Optional[str] = None
+    header_media_type: Optional[str] = None  # "image" | "video" | "document"
+
+
+@api_router.post("/whatsapp/send-template")
+async def whatsapp_send_template(body: WhatsAppTemplateSendBody):
+    """Envía una plantilla Meta ya aprobada con parámetros rellenos al teléfono destino.
+    Lee phone_number_id + access_token de las conexiones del proyecto."""
+    connections = await _read_storage(f"wa_editor:p:{body.project_id}:connections") or {}
+    phone_id = connections.get("phoneNumberId")
+    access_token = connections.get("accessToken")
+    if not phone_id or not access_token:
+        raise HTTPException(status_code=400, detail="Faltan Phone Number ID y/o Access Token en Conexiones.")
+
+    to = _re.sub(r"\D", "", body.to_phone or "")
+    if not to:
+        raise HTTPException(status_code=400, detail="Teléfono destino inválido (E.164 sin +).")
+
+    components: List[Dict[str, Any]] = []
+    if body.header_media_url and body.header_media_type:
+        mt = body.header_media_type.lower()
+        media_key = {"image": "image", "video": "video", "document": "document"}.get(mt)
+        if media_key:
+            components.append({
+                "type": "header",
+                "parameters": [{"type": media_key, media_key: {"link": body.header_media_url}}],
+            })
+    if body.params:
+        components.append({
+            "type": "body",
+            "parameters": [{"type": "text", "text": str(p)[:1024]} for p in body.params],
+        })
+
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "template",
+        "template": {
+            "name": body.template_name,
+            "language": {"code": body.language or "es"},
+            **({"components": components} if components else {}),
+        },
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as hc:
+            r = await hc.post(
+                f"https://graph.facebook.com/v21.0/{phone_id}/messages",
+                json=payload,
+                headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+            )
+            data = r.json() if r.content else {}
+            if r.status_code < 400:
+                return {"ok": True, "message_id": (data.get("messages") or [{}])[0].get("id"), "response": data}
+            err_msg = (data.get("error") or {}).get("message") or str(data)[:300]
+            return {"ok": False, "status": r.status_code, "error": err_msg, "response": data}
+    except Exception as e:
+        return {"ok": False, "error": f"Error Meta API: {str(e)[:300]}"}
 
 
 # ============================================================
@@ -1176,7 +1242,6 @@ def _detect_creative_type(content_type: str) -> str:
 # Itera los flujos Meta del proyecto, categoriza el copy con LLM (MARKETING/UTILITY),
 # convierte {VAR} a {{1}},{{2}}... y crea las plantillas en el WABA del usuario.
 # ============================================================
-import re as _re
 
 
 class MetaTemplatesSyncBody(BaseModel):

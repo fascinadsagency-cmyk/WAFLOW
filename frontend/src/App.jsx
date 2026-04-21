@@ -539,6 +539,145 @@ function VarPicker({ vars, onInsert }) {
 // ====================================================================
 // EVOLUTION SEND MODAL — envío real via Evolution API (solo broadcasts & venta_comunidad)
 // ====================================================================
+// Modal: enviar plantilla Meta aprobada con parámetros a un teléfono real.
+// Auto-detecta las variables del copy, prerellena con los valores del proyecto,
+// y permite override antes de disparar el envío via /api/whatsapp/send-template.
+function MetaTemplateSendModal({ msg, effectiveCopy, vars, templateMeta, flowKey, msgId, projectId, creatives, onClose }) {
+  const detectedVarNames = React.useMemo(() => {
+    if (!effectiveCopy) return [];
+    const found = [];
+    const re = /\{([A-Z_][A-Z0-9_]*)\}/g;
+    let m;
+    while ((m = re.exec(effectiveCopy)) !== null) {
+      if (!found.includes(m[1])) found.push(m[1]);
+    }
+    return found;
+  }, [effectiveCopy]);
+
+  const [to, setTo] = useState("");
+  const [paramValues, setParamValues] = useState(() => {
+    const init = {};
+    detectedVarNames.forEach(n => {
+      const v = vars.find(x => x.name === n);
+      init[n] = v?.value || "";
+    });
+    return init;
+  });
+  const [sending, setSending] = useState(false);
+  const [result, setResult] = useState(null);
+
+  const templateName = templateMeta?.name || `waflow_${flowKey}_${(msgId || "m").toString().toLowerCase()}`;
+  const language = templateMeta?.language || "es";
+  const synced = !!templateMeta?.meta_id;
+  const tplStatus = templateMeta?.status;
+  const firstImageCreative = (creatives || []).find(c => c.type === "image" && (c.url || "").startsWith("http"));
+
+  const doSend = async () => {
+    if (!to || to.length < 6) { setResult({ ok: false, error: "Teléfono destino inválido. Usa formato E.164 sin + (ej. 34612345678)." }); return; }
+    setSending(true); setResult(null);
+    try {
+      const orderedParams = detectedVarNames.map(n => paramValues[n] || "");
+      const r = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/whatsapp/send-template`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project_id: projectId,
+          template_name: templateName,
+          language,
+          to_phone: to,
+          params: orderedParams,
+          header_media_url: firstImageCreative?.url || null,
+          header_media_type: firstImageCreative ? "image" : null,
+        }),
+      });
+      const data = await r.json();
+      setResult(data);
+    } catch (e) {
+      setResult({ ok: false, error: "Red: " + e.message });
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full overflow-hidden" onClick={e => e.stopPropagation()} data-testid="meta-tpl-send-modal">
+        <div className="px-5 py-3 bg-gradient-to-r from-indigo-50 to-violet-50 border-b border-indigo-200 flex items-center justify-between">
+          <div>
+            <div className="text-sm font-bold text-indigo-900">Enviar plantilla Meta a un teléfono</div>
+            <div className="text-[11px] text-indigo-700 font-mono">{templateName} · {language}</div>
+          </div>
+          <button onClick={onClose} className="text-stone-500 hover:text-stone-900"><X size={16} /></button>
+        </div>
+        <div className="p-5 space-y-3">
+          {!synced && (
+            <div className="text-[11.5px] bg-amber-50 border border-amber-200 text-amber-900 rounded p-2 leading-relaxed">
+              ⚠ <strong>Plantilla no sincronizada con Meta aún.</strong> Si no existe en tu WABA con el nombre <code className="font-mono">{templateName}</code>, Meta rechazará el envío. Ve a <strong>Autopilot → Sincronizar plantillas con Meta</strong> primero.
+            </div>
+          )}
+          {synced && tplStatus !== "APPROVED" && (
+            <div className="text-[11.5px] bg-amber-50 border border-amber-200 text-amber-900 rounded p-2 leading-relaxed">
+              ⚠ Estado actual de la plantilla: <strong>{tplStatus}</strong>. Meta solo permite enviar plantillas APPROVED. Usa "Refrescar estado desde Meta" tras la espera de aprobación.
+            </div>
+          )}
+
+          <div>
+            <label className="text-[11px] font-semibold text-stone-700 uppercase tracking-widest">Teléfono destino (E.164 sin +)</label>
+            <input type="tel" value={to} onChange={e => setTo(e.target.value.replace(/\D/g, ""))}
+              placeholder="34612345678" data-testid="meta-tpl-to-input"
+              className="w-full mt-1 px-3 py-2 text-sm font-mono border border-stone-300 rounded-md focus:outline-none focus:border-stone-900" />
+          </div>
+
+          {detectedVarNames.length > 0 && (
+            <div>
+              <label className="text-[11px] font-semibold text-stone-700 uppercase tracking-widest">Parámetros ({detectedVarNames.length})</label>
+              <div className="space-y-2 mt-1">
+                {detectedVarNames.map((n, i) => (
+                  <div key={n} className="flex items-center gap-2">
+                    <span className="text-[10.5px] font-mono bg-indigo-100 text-indigo-800 px-1.5 py-0.5 rounded">{`{{${i + 1}}}`}</span>
+                    <span className="text-[11px] text-stone-600 min-w-[110px] truncate">{n}</span>
+                    <input value={paramValues[n] || ""} onChange={e => setParamValues({ ...paramValues, [n]: e.target.value })}
+                      data-testid={`meta-tpl-param-${n}`}
+                      className="flex-1 px-2 py-1 text-sm border border-stone-200 rounded focus:outline-none focus:border-stone-900" />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {firstImageCreative && (
+            <div className="text-[11px] bg-sky-50 border border-sky-200 text-sky-900 rounded p-2">
+              📎 Header: se incluirá la imagen <strong>{firstImageCreative.name || firstImageCreative.url.split("/").pop()}</strong>
+            </div>
+          )}
+
+          {result && (
+            <div className={`text-[11.5px] border rounded p-2 ${result.ok ? "bg-emerald-50 border-emerald-200 text-emerald-900" : "bg-red-50 border-red-200 text-red-900"}`} data-testid="meta-tpl-send-result">
+              {result.ok
+                ? <>✓ Enviado. Message ID: <code className="font-mono">{result.message_id}</code></>
+                : <><strong>Error Meta:</strong> {result.error || "desconocido"}</>}
+            </div>
+          )}
+        </div>
+        <div className="px-5 py-3 bg-stone-50 border-t border-stone-200 flex items-center justify-between gap-2">
+          <div className="text-[10.5px] text-stone-500">
+            💡 Este envío consume 1 conversación Meta Business.
+          </div>
+          <div className="flex gap-2">
+            <button onClick={onClose} className="px-3 py-1.5 text-sm text-stone-700 hover:text-stone-900">Cerrar</button>
+            <button onClick={doSend} disabled={sending || !to}
+              data-testid="meta-tpl-send-confirm-btn"
+              className="inline-flex items-center gap-1.5 px-4 py-1.5 text-sm font-semibold bg-indigo-600 text-white rounded-md hover:bg-indigo-700 disabled:opacity-50">
+              <Send size={12} /> {sending ? "Enviando..." : "Enviar ahora"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 function EvolutionSendModal({ msg, rendered, evolutionConfig, onSend, onClose, flowKey, msgKey }) {
   const [target, setTarget] = useState("group"); // "group" | "number"
   const [to, setTo] = useState("");
@@ -756,6 +895,7 @@ function MessageCard({
   const [showAttachModal, setShowAttachModal] = useState(false);
   const [showEvoSend, setShowEvoSend] = useState(false);
   const [showMetaSend, setShowMetaSend] = useState(false);
+  const [showTplSend, setShowTplSend] = useState(false);
   const [newComment, setNewComment] = useState("");
   const textareaRef = useRef(null);
 
@@ -870,12 +1010,12 @@ function MessageCard({
                       <Send size={12} /> Enviar ahora
                     </button>
                   )}
-                  {!canUseEvolution && onMetaTestSend && (
-                    <button onClick={e => { e.stopPropagation(); setShowMetaSend(true); }}
-                      data-testid={`meta-test-btn-${flowKey}-${msg.id || index}`}
-                      title="Enviar test a un número via Meta API"
-                      className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-sky-700 bg-sky-50 border border-sky-300 rounded-md hover:bg-sky-100">
-                      <Send size={12} /> Test Meta
+                  {isMetaFlow && (
+                    <button onClick={e => { e.stopPropagation(); setShowTplSend(true); }}
+                      data-testid={`meta-tpl-send-btn-${flowKey}-${msg.id || index}`}
+                      title="Enviar esta plantilla Meta real a un teléfono con parámetros"
+                      className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-indigo-700 bg-indigo-50 border border-indigo-300 rounded-md hover:bg-indigo-100">
+                      <Send size={12} /> Enviar plantilla
                     </button>
                   )}
                   {isCustom && onRemoveCustom && (
@@ -1149,6 +1289,19 @@ function MessageCard({
           msgKey={msgKey}
         />
       )}
+      {showTplSend && isMetaFlow && (
+        <MetaTemplateSendModal
+          msg={msg}
+          effectiveCopy={effectiveCopy}
+          vars={vars}
+          templateMeta={templateMeta}
+          flowKey={flowKey}
+          msgId={msg.id || index}
+          projectId={(metaConfig || {}).projectId || ""}
+          creatives={msgCreatives}
+          onClose={() => setShowTplSend(false)}
+        />
+      )}
     </div>
   );
 }
@@ -1161,7 +1314,7 @@ function FlowView({
   templatesByMsg, onSetTemplateMeta,
   onAttachCreative, onRemoveCreativeAssoc,
   onAddCustomMessage, onRemoveCustomMessage, onEvolutionSend, evolutionConfig,
-  me,
+  me, projectId,
 }) {
   const canUseEvolution = flow.key === "broadcasts" || flow.key === "venta_comunidad";
   const renderMsg = (m, i, pref) => {
@@ -1188,6 +1341,7 @@ function FlowView({
         canUseEvolution={canUseEvolution}
         evolutionConfig={evolutionConfig}
         onEvolutionSend={onEvolutionSend}
+        metaConfig={{ projectId }}
       />
     );
   };
@@ -5206,6 +5360,7 @@ function ProjectWorkspace({ project, onBack, me, onUpdateProject }) {
                 onRemoveCustomMessage={removeCustomMessage}
                 evolutionConfig={connections.evolution || null}
                 onEvolutionSend={handleEvolutionSend}
+                projectId={project.id}
               />}
             </main>
           </>

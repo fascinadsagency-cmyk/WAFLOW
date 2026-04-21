@@ -117,7 +117,22 @@ Editor colaborativo multi-proyecto de secuencias de mensajes de WhatsApp para ag
 - **ConnectionsPanel**: nuevo campo "Webhook deploy (🚀 Lanzar ahora)" (`n8nDeployWebhookUrl`)
 - **createSnapshot** ahora devuelve el ID del snapshot creado (necesario para pasarlo al wizard)
 
-### Iter 11 (21 feb 2026) — Sincronización directa de plantillas con Meta
+### Iter 12 (21 feb 2026) — Envío real de plantillas Meta con parámetros
+- **Backend — 1 endpoint nuevo**: `POST /api/whatsapp/send-template` recibe `{project_id, template_name, language, to_phone, params[], header_media_url, header_media_type}`. Lee `phoneNumberId` + `accessToken` de las conexiones del proyecto. Construye el payload Meta con estructura `template.components[header|body].parameters` y dispara `POST /{phone_id}/messages`. Devuelve `{ok, message_id}` o `{ok:false, error}` con el mensaje de Meta sin crashear.
+- **Frontend — `MetaTemplateSendModal`** (nuevo componente, ~125 líneas, insertado antes de `EvolutionSendModal`):
+  - Auto-detecta las variables `{NOMBRE}`, `{TITULO_WEBINAR}`... del copy efectivo (editado o original).
+  - Prerellena cada parámetro con el valor actual de la variable del proyecto (editable).
+  - Muestra el mapping visual `{{1}} NOMBRE → [input]` para confirmar el orden.
+  - Campo teléfono E.164 (auto-strip de no-dígitos).
+  - Si hay creativo tipo `image` con URL pública → se incluye como header media.
+  - Warnings contextuales: "plantilla no sincronizada" si `!meta_id`; "estado != APPROVED" si `status != APPROVED`.
+  - Muestra message_id Meta tras envío exitoso o error Meta legible.
+- **Frontend — botón "Enviar plantilla"** (data-testid=`meta-tpl-send-btn-${flowKey}-${msgId}`) en cada MessageCard de flujos Meta (no broadcasts/comunidad). Abre el modal al click.
+- **Refactor menor**: eliminado el botón huérfano "Test Meta" que apuntaba a `MetaTestSendModal` (componente inexistente — era dead code desde iter-5).
+- **FlowView** propaga `projectId` y `metaConfig` al MessageCard para que el modal pueda llamar al backend con contexto.
+- **Testing iter-12**: compila limpio (ESLint OK), 35/35 regresión pasando. Probado el endpoint backend via curl: construye payload correcto, devuelve error 401 de Meta sin crashear cuando el token es falso (esperado). Falta probar en vivo con credenciales reales (el usuario lo validará con su cuenta).
+
+
 - **Backend — 2 endpoints nuevos** (server.py ~línea 1200):
   - `POST /api/meta/templates/sync` — recibe project_id + items[{msg_key, flow_key, msg_id, copy, botones, creative_url}] + force_replace. Para cada item:
     1. Categoriza `MARKETING` vs `UTILITY` via Claude Sonnet 4.5 (emergentintegrations) según el contenido del copy.
