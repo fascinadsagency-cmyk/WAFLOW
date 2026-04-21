@@ -633,6 +633,130 @@ async def review_summary_pdf(token: str):
 
 
 # ============================================================
+# LAUNCH — modo lanzamiento activo: deploy + polling + auto-freeze
+# ============================================================
+class LaunchDeployBody(BaseModel):
+    project_id: str
+    project_name: str
+    workflow_json: Dict[str, Any]
+    n8n_webhook_url: str
+    snapshot_id: Optional[str] = None
+
+
+@api_router.post("/launch/deploy")
+async def launch_deploy(body: LaunchDeployBody):
+    """Envía el workflow JSON al webhook de despliegue de n8n del usuario.
+    n8n debe tener un Webhook node configurado que acepte el workflow y:
+    - (A) lo cree vía /rest/workflows (n8n API), o
+    - (B) simplemente lo almacene para revisión manual.
+    Guarda el estado del launch en storage_shared para que el frontend pueda pollear.
+    """
+    launch_id = secrets.token_urlsafe(12)
+    started_at = datetime.now(timezone.utc).isoformat()
+
+    relay_result: Dict[str, Any] = {"ok": False, "status": None}
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as hc:
+            r = await hc.post(
+                body.n8n_webhook_url,
+                json={
+                    "launch_id": launch_id,
+                    "project_id": body.project_id,
+                    "project_name": body.project_name,
+                    "snapshot_id": body.snapshot_id,
+                    "workflow": body.workflow_json,
+                    "triggered_at": started_at,
+                },
+            )
+            relay_result = {
+                "ok": r.status_code < 400,
+                "status": r.status_code,
+                "response": (r.json() if r.content and r.headers.get("content-type", "").startswith("application/json") else r.text[:400]),
+            }
+    except Exception as e:
+        relay_result = {"ok": False, "status": 0, "error": str(e)}
+
+    launch = {
+        "launch_id": launch_id,
+        "project_id": body.project_id,
+        "snapshot_id": body.snapshot_id,
+        "started_at": started_at,
+        "status": "running" if relay_result["ok"] else "deploy_failed",
+        "deploy_result": relay_result,
+        "n8n_webhook_url_masked": body.n8n_webhook_url[:40] + "…" if len(body.n8n_webhook_url) > 40 else body.n8n_webhook_url,
+        "auto_frozen": False,
+    }
+    await _write_storage(f"wa_editor:p:{body.project_id}:active_launch", launch)
+    return {"ok": relay_result["ok"], "launch_id": launch_id, "status": launch["status"], "deploy_result": relay_result}
+
+
+@api_router.get("/launch/{project_id}/status")
+async def launch_status(project_id: str):
+    """Estado del lanzamiento activo + stats agregados de /api/events del proyecto."""
+    launch = await _read_storage(f"wa_editor:p:{project_id}:active_launch")
+    if not launch:
+        return {"active": False}
+
+    # Stats desde events del proyecto
+    cursor = db.events.find({"project_id": project_id}, {"_id": 0}).limit(5000)
+    events = await cursor.to_list(5000)
+    stats = {
+        "sent": sum(1 for e in events if e.get("event") == "message_sent"),
+        "delivered": sum(1 for e in events if e.get("event") == "message_delivered"),
+        "read": sum(1 for e in events if e.get("event") == "message_read"),
+        "failed": sum(1 for e in events if e.get("event") == "message_failed"),
+        "clicked": sum(1 for e in events if e.get("event") == "button_clicked"),
+        "replied": sum(1 for e in events if e.get("event") == "reply_received"),
+        "total_events": len(events),
+    }
+    delivery_rate = round((stats["delivered"] / stats["sent"] * 100), 1) if stats["sent"] > 0 else 0
+    read_rate = round((stats["read"] / stats["delivered"] * 100), 1) if stats["delivered"] > 0 else 0
+
+    return {
+        "active": True,
+        "launch": launch,
+        "stats": stats,
+        "delivery_rate": delivery_rate,
+        "read_rate": read_rate,
+    }
+
+
+class LaunchCompleteBody(BaseModel):
+    project_id: str
+    reason: Optional[str] = "manual"
+
+
+@api_router.post("/launch/complete")
+async def launch_complete(body: LaunchCompleteBody):
+    """Marca el launch como completado (manual o auto). No borra el registro — queda en histórico."""
+    launch = await _read_storage(f"wa_editor:p:{body.project_id}:active_launch")
+    if not launch:
+        raise HTTPException(status_code=404, detail="No hay launch activo")
+    launch["status"] = "completed"
+    launch["completed_at"] = datetime.now(timezone.utc).isoformat()
+    launch["complete_reason"] = body.reason
+    await _write_storage(f"wa_editor:p:{body.project_id}:active_launch", launch)
+    # Archivar en histórico
+    history_key = f"wa_editor:p:{body.project_id}:launch_history"
+    history = await _read_storage(history_key) or []
+    history.insert(0, launch)
+    await _write_storage(history_key, history[:20])  # mantener últimos 20
+    return {"ok": True, "launch": launch}
+
+
+@api_router.post("/launch/{project_id}/stop")
+async def launch_stop(project_id: str):
+    """Cancela el launch activo sin marcarlo completado."""
+    launch = await _read_storage(f"wa_editor:p:{project_id}:active_launch")
+    if not launch:
+        raise HTTPException(status_code=404, detail="No hay launch activo")
+    launch["status"] = "stopped"
+    launch["stopped_at"] = datetime.now(timezone.utc).isoformat()
+    await _write_storage(f"wa_editor:p:{project_id}:active_launch", launch)
+    return {"ok": True, "launch": launch}
+
+
+# ============================================================
 # ROOT
 # ============================================================
 @api_router.get("/")

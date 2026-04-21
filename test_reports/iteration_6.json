@@ -1,0 +1,42 @@
+{
+  "summary": "Iter-6 (Modo Lanzamiento Activo) tested. BACKEND: 13/13 pytest PASS covering all new endpoints (deploy success w/ httpbin 200, deploy fail-still-persists w/ httpbin 500, status no-active, status active w/ stats calc from seeded events, stop marks stopped, stop 404, complete archives to launch_history, complete 404) + regressions (storage set/get, events post/list, review/create, evolution relay shape, whatsapp relay shape). FRONTEND (real UI on TEST_review_085f8ce7): (1) ConnectionsPanel muestra el nuevo field 'Webhook deploy (🚀 Lanzar ahora)' — label exacta verificada, input editable. (2) AutopilotPanel tiene el botón data-testid='autopilot-launch-now' rojo/naranja como primer item de la grid de acciones; en este proyecto readyPct=13% así que el botón está disabled con tooltip 'Termina el checklist primero (13% completado)' — click forzado NO abre el wizard (correcto). (3) Tras un POST /api/launch/deploy inyectado + seed de 20 events (10 sent/9 delivered/4 read/1 failed), el Autopilot polea el /status y la Live Launch card (data-testid='live-launch-card') aparece debajo del checklist con 'LANZAMIENTO ACTIVO · Launch OJzPD9FDeigrSzWb', botón '⏹ Cancelar' (data-testid='launch-stop-btn'), las 4 métricas exactas (ENVIADOS 10, ENTREGADOS 9, LEÍDOS 4, FALLIDOS 1), barra de tasa de entrega 90% (correctamente en indigo porque <95%) y footer 'Polling automático cada 30s · Auto-congelar a ≥ 95%'. (4) Click en el stop button → POST /api/launch/{pid}/stop → re-poll → la card desaparece (launch.status='stopped' filtra el render). NO testado UI end-to-end: abrir el LaunchWizard y hacer click en launch-deploy-btn, porque requiere readyPct=100 y el checklist de este proyecto necesita 8 checks OK (vars/approval/templates/meta/n8n/evo/creatives/notify) lo que supone reconstruir todo el proyecto. El endpoint /api/launch/deploy sí queda cubierto al 100% por los tests backend (éxito + fallo). Sin errores runtime en las 2 sesiones de navegación.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "LaunchWizard (revisión estática del código)", "issues": ["El stopLaunch en AutopilotPanel (App.jsx:2266-2270) usa window.confirm en vez del patrón ConfirmDialog que ya tenéis para deleteProject — mismo feedback arrastrado de iter-5. Parar un lanzamiento en producción es irreversible: merece confirmación propia con contador o doble input (tipo 'escribe STOP')."]},
+      {"screen": "AutopilotPanel / polling", "issues": ["El useEffect de polling (App.jsx:2121-2140) arranca SIEMPRE al montar, incluso si nunca ha habido launch — un GET /status cada 30s para proyectos que nunca lanzarán es tráfico innecesario. Recomendación: pollear sólo si launchStatus?.active o después de un deploy exitoso; o levantar el polling al primer 200 con active=true."]},
+      {"screen": "LaunchWizard steps", "issues": ["Los steps 4 y 5 ('Esperar 95%' y 'Auto-congelar') siempre tienen done=false (hardcoded en steps array, App.jsx:1934-1935). Dentro del modal nunca se actualizan aunque el launch alcance el 95% (porque el modal se cierra al hacer deploy). Considera pasar delivery_rate al wizard o mover esos 2 steps al Live Launch card como progreso en vivo."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter6.py",
+    "/app/test_reports/pytest/pytest_iter6.xml"
+  ],
+  "action_items": [
+    "(Opcional UX) Reemplazar window.confirm de stopLaunch por ConfirmDialog (mismo patrón que deleteProject). Parar un launch es irreversible.",
+    "(Opcional performance) Condicionar el polling /launch/{pid}/status a que exista al menos un launch activo o se haya hecho un deploy en la sesión — evitar 1 req/30s por proyecto que nunca lanza.",
+    "(Opcional UX) Steps 4 y 5 del wizard siempre aparecen en gris; considerar ligarlos a delivery_rate del launch o moverlos al Live Launch card.",
+    "(Arrastrado iter-5, no bloqueante) URL del nodo Evolution en generateN8nWorkflow (App.jsx:2034) sigue sin el prefijo '=' — seguirá generando workflows con URL literal cuando el cliente importe a n8n."
+  ],
+  "critical_code_review_comments": [
+    "App.jsx ya supera 5090 líneas. Iter-6 añadió LaunchWizard + Live Launch card + polling dentro de AutopilotPanel, que ya estaba cerca de 300 líneas. Extraer urgente a src/panels/AutopilotPanel.jsx + src/panels/LaunchWizard.jsx antes de iter-7 o habrá regresiones por colisión de estado.",
+    "launch_deploy backend (server.py:646-690) no valida la URL del webhook — cualquier string pasa. Si alguien pega 'localhost' accidentalmente, httpx bloquea 2s y devuelve deploy_failed (aceptable) pero sería más limpio validar con pydantic HttpUrl.",
+    "launch_status (server.py:693-721) hace un cursor con limit 5000 y calcula stats en memoria — para proyectos con >5k events perderá eventos. Migrar a aggregation pipeline con $group by event (Mongo lo hace en O(n) server-side).",
+    "active_launch se almacena con el mismo esquema en 'status'='running'|'deploy_failed'|'stopped'|'completed', pero nunca se borra — tras un stop/complete sigue existiendo y launch_status lo devolvería como active:true. El frontend filtra por status !== 'stopped' && !== 'completed' (App.jsx:2343), pero un bug en el filtro dejaría la card fantasma. Más robusto: al complete/stop, mover el doc a launch_history y borrar active_launch."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter6.py (nuevo — 13 tests: 8 launch + 5 regression)"
+  ],
+  "success_rate": {
+    "backend": "100% (13/13)",
+    "frontend": "~85% — UI verificada excepto apertura del LaunchWizard desde el botón (requería seed completo para readyPct=100); el endpoint subyacente /api/launch/deploy sí está cubierto 100% por pytest."
+  },
+  "test_credentials": "No auth. Se usó TEST_review_085f8ce7 (único proyecto real en la lista — nota: el review request menciona TEST_review_cc639fe4 pero ese ya no existe en storage; probablemente fue limpiado entre iter-4 y iter-6).",
+  "seed_data_creation": "Se creó active_launch + 20 events (sent/delivered/read/failed) para TEST_review_085f8ce7 durante el test, y active_launch + launch_history para TEST_iter6_launch. TODOS LIMPIADOS al final (cleanup fixture + cleanup manual). Los events insertados en /api/events quedan (no hay endpoint para borrar events individuales, son inocuos).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Para testear el wizard end-to-end en una iter futura, la forma más rápida es crear un proyecto con strategy='webinar' y: (a) rellenar las 46 vars, (b) marcar template en al menos 3 mensajes de flows no-evo, (c) configurar conn meta (phoneNumberId+accessToken), n8n webhooks (webhook+deploy), evolution completa (si los flows broadcasts/venta_comunidad tienen msgs), (d) añadir creatives con messageKey a los primeros 2 msgs de cada flujo, (e) firmar el review (POST /review/create + /review/{token}/sign), (f) aprobar 80%+ mensajes o firmar para que approval=OK. Más rápido: monkey-patchear el componente en dev-only para forzar readyPct=100. Testids clave: autopilot-launch-now, launch-deploy-btn, live-launch-card, launch-stop-btn. Endpoint /api/launch/deploy ya validado contra httpbin.org/status/200 y /500. launch_history se limita a los últimos 20.",
+  "rca_of_the_issue": "No hubo bug bloqueante. Los 3 design_issues son mejoras incrementales. El comportamiento del botón disabled, el wizard, el deploy backend y la Live Launch card funcionan según spec."
+}

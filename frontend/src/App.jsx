@@ -1835,6 +1835,10 @@ function ConnectionsPanel({ conn, setConn, projectName, notifyConfig, setNotifyC
           <Field label="Webhook URL (Meta → n8n)" value={conn.n8nWebhookUrl} onChange={v => update("n8nWebhookUrl", v)} mono full />
           <Field label="n8n API URL" value={conn.n8nApiUrl} onChange={v => update("n8nApiUrl", v)} mono />
           <Field label="n8n API Key" value={conn.n8nApiKey} onChange={v => update("n8nApiKey", v)} mono password />
+          <Field label="Webhook deploy (🚀 Lanzar ahora)" value={conn.n8nDeployWebhookUrl} onChange={v => update("n8nDeployWebhookUrl", v)} mono full />
+        </div>
+        <div className="text-[10.5px] text-stone-500 bg-stone-50 border border-stone-200 rounded p-2 mt-3 leading-relaxed">
+          💡 <strong>Webhook deploy</strong>: lo usa el botón "🚀 Lanzar ahora" del Autopilot. Tu workflow n8n debe recibir el JSON del payload y crear/activar el workflow generado por WAFLOW (via <code className="font-mono">/rest/workflows</code> de n8n API, o guardarlo para revisión manual).
         </div>
       </div>
       <div className="bg-white border border-stone-200 rounded-lg p-5">
@@ -1913,15 +1917,139 @@ function ConnectionsPanel({ conn, setConn, projectName, notifyConfig, setNotifyC
 
 
 // ====================================================================
+// LAUNCH WIZARD — Modo Lanzamiento Activo
+// Pasos: snapshot → deploy n8n → iniciar polling → auto-freeze al 95%
+// ====================================================================
+function LaunchWizard({ project, connections, workflowJson, snapshotId, onDeployed, onClose }) {
+  const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
+  const [step, setStep] = useState(0); // 0:review, 1:deploying, 2:running
+  const [deployResult, setDeployResult] = useState(null);
+  const [error, setError] = useState(null);
+  const deployUrl = connections?.n8nDeployWebhookUrl || "";
+
+  const steps = [
+    { label: "Snapshot Pre-launch", icon: "📸", done: !!snapshotId },
+    { label: "Desplegar a n8n", icon: "🚀", done: step >= 2 },
+    { label: "Activar polling", icon: "📡", done: step >= 2 },
+    { label: "Esperar 95% entregas", icon: "⏱️", done: false },
+    { label: "Auto-congelar al cierre", icon: "🔒", done: false },
+  ];
+
+  const deploy = async () => {
+    if (!deployUrl) { setError("Falta 'Webhook deploy' en Conexiones → n8n."); return; }
+    setError(null);
+    setStep(1);
+    try {
+      const r = await fetch(`${API}/launch/deploy`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project_id: project.id,
+          project_name: project.name,
+          workflow_json: workflowJson,
+          n8n_webhook_url: deployUrl,
+          snapshot_id: snapshotId || null,
+        }),
+      });
+      const data = await r.json();
+      setDeployResult(data);
+      if (!data.ok) {
+        setError(`Deploy webhook devolvió error (${data.deploy_result?.status || "?"}). Revisa el webhook en tu n8n.`);
+        setStep(0);
+        return;
+      }
+      setStep(2);
+      onDeployed && onDeployed(data);
+    } catch (e) {
+      setError("Error de red: " + String(e));
+      setStep(0);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-2xl max-w-xl w-full overflow-hidden flex flex-col max-h-[90vh]" onClick={e => e.stopPropagation()}>
+        <div className="px-5 py-4 border-b border-stone-200 bg-gradient-to-r from-red-600 to-orange-600 text-white">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="text-2xl">🚀</div>
+              <div>
+                <div className="text-[10px] uppercase tracking-widest opacity-80">Modo Lanzamiento Activo</div>
+                <div className="font-bold text-base">Lanzar "{project.name}"</div>
+              </div>
+            </div>
+            <button onClick={onClose} className="text-white/80 hover:text-white"><X size={16} /></button>
+          </div>
+        </div>
+        <div className="p-5 space-y-4 overflow-y-auto">
+          <div className="bg-amber-50 border border-amber-300 rounded p-3 text-[12px] text-amber-900 leading-relaxed">
+            <strong>⚠️ Acción en producción.</strong> Al confirmar, WAFLOW enviará el workflow n8n generado al webhook de deploy. Tus flujos pasarán a <strong>ejecutar mensajes reales</strong>. Asegúrate de haber hecho el QA con el Simulador.
+          </div>
+          <div>
+            <div className="text-[11px] font-semibold tracking-widest text-stone-500 uppercase mb-2">Plan de lanzamiento</div>
+            <div className="space-y-1.5">
+              {steps.map((s, i) => (
+                <div key={i} className={`flex items-center gap-3 p-2.5 rounded border ${
+                  s.done ? "bg-emerald-50 border-emerald-200"
+                  : step === 1 && i === 1 ? "bg-indigo-50 border-indigo-300 animate-pulse"
+                  : "bg-stone-50 border-stone-200"
+                }`}>
+                  <div className="text-lg">{s.done ? "✅" : s.icon}</div>
+                  <div className="text-[13px] font-medium text-stone-800">{s.label}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div>
+            <div className="text-[11px] font-semibold tracking-widest text-stone-500 uppercase mb-1">Deploy webhook configurado</div>
+            {deployUrl ? (
+              <div className="text-[11.5px] font-mono bg-stone-50 border border-stone-200 rounded p-2 break-all text-stone-700">{deployUrl}</div>
+            ) : (
+              <div className="text-[12px] text-red-700 bg-red-50 border border-red-200 rounded p-2">
+                ❌ Falta. Configúralo en <em>Conexiones → n8n → Webhook deploy</em>.
+              </div>
+            )}
+          </div>
+          {error && <div className="bg-red-50 border border-red-200 rounded p-2.5 text-[12px] text-red-800">{error}</div>}
+          {deployResult && deployResult.ok && (
+            <div className="bg-emerald-50 border border-emerald-200 rounded p-2.5 text-[12px] text-emerald-800">
+              ✅ Workflow enviado al webhook. Launch ID: <code className="font-mono text-[11px]">{deployResult.launch_id}</code>
+              <div className="mt-1 text-[11px] text-emerald-700">El Autopilot empezará a pollear eventos automáticamente.</div>
+            </div>
+          )}
+        </div>
+        <div className="px-5 py-3 bg-stone-50 border-t border-stone-200 flex justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-stone-700">Cerrar</button>
+          {step === 2 ? (
+            <button onClick={onClose} className="px-5 py-2 text-sm font-semibold bg-emerald-600 text-white rounded-md hover:bg-emerald-700">
+              ✅ Volver al Autopilot
+            </button>
+          ) : (
+            <button onClick={deploy} disabled={step === 1 || !deployUrl}
+              data-testid="launch-deploy-btn"
+              className="px-5 py-2 text-sm font-semibold bg-red-600 text-white rounded-md hover:bg-red-700 disabled:opacity-50 inline-flex items-center gap-1.5">
+              <Zap size={14} /> {step === 1 ? "Desplegando..." : "Lanzar ahora"}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ====================================================================
 // AUTOPILOT PANEL — timeline de lanzamiento + pre-flight checklist + acciones
 // ====================================================================
 function AutopilotPanel({
   project, vars, edits, creatives, connections, notifyConfig, templatesByMsg,
   approvalByMsg, snapshots, flows, onCreateSnapshot, onFreezeToggle, onGoToTab,
+  onUpdateProject,
 }) {
   const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
   const [reviewSignature, setReviewSignature] = useState(null);
   const [generatingWf, setGeneratingWf] = useState(false);
+  const [launchWizard, setLaunchWizard] = useState(null); // {workflowJson, snapshotId}
+  const [launchStatus, setLaunchStatus] = useState(null); // {active, launch, stats, delivery_rate}
 
   // Fetch review signature state
   useEffect(() => {
@@ -1988,107 +2116,131 @@ function AutopilotPanel({
     { key: "launch", label: "5. Lanzamiento", desc: "Captación activa + monitoreo", icon: "📡", done: false, active: false },
   ];
 
+  // Polling del launch activo (cada 30s)
+  useEffect(() => {
+    let timer;
+    const poll = async () => {
+      try {
+        const r = await fetch(`${API}/launch/${project.id}/status`);
+        const data = await r.json();
+        setLaunchStatus(data);
+        // Auto-freeze al 95%+ si aún no está frozen y el launch está activo
+        if (data.active && data.delivery_rate >= 95 && !data.launch?.auto_frozen && project.status !== "frozen") {
+          try {
+            await fetch(`${API}/launch/complete`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ project_id: project.id, reason: "auto_freeze_95_delivered" }),
+            });
+            if (onUpdateProject) onUpdateProject(project.id, { status: "frozen" });
+          } catch {}
+        }
+      } catch {}
+    };
+    poll();
+    timer = setInterval(poll, 30000);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project.id, project.status]);
+
+  // Construye el objeto workflow n8n (compartido por export y launch)
+  const buildWorkflowJson = () => {
+    const nodes = [
+      {
+        parameters: { httpMethod: "POST", path: `waflow-${project.id.slice(-8)}`, responseMode: "onReceived" },
+        id: "n_webhook", name: "Webhook entrada lead", type: "n8n-nodes-base.webhook",
+        typeVersion: 1, position: [240, 300],
+      },
+      {
+        parameters: { jsCode: `// Normalizar lead\nconst data = $input.first().json;\nreturn [{ json: { phone: data.phone || data.telefono || data['WhatsApp'], name: data.name || data.nombre || data.email?.split('@')[0] || 'amig@', email: data.email, user_id: data.user_id || data.email, ...data } }];` },
+        id: "n_normalize", name: "Normalizar datos", type: "n8n-nodes-base.code",
+        typeVersion: 2, position: [460, 300],
+      },
+    ];
+    const connectionsMap = {
+      "Webhook entrada lead": { main: [[{ node: "Normalizar datos", type: "main", index: 0 }]] },
+    };
+    let x = 680;
+    flows.forEach((f, fi) => {
+      const sectionNodeName = `${f.label} — inicio`;
+      nodes.push({
+        parameters: { unit: "seconds", amount: 1 },
+        id: `n_wait_${f.key}`, name: sectionNodeName, type: "n8n-nodes-base.wait",
+        typeVersion: 1, position: [x, 300 + fi * 40],
+      });
+      const prevNode = fi === 0 ? "Normalizar datos" : `${flows[fi - 1].label} — inicio`;
+      if (!connectionsMap[prevNode]) connectionsMap[prevNode] = { main: [[]] };
+      connectionsMap[prevNode].main[0].push({ node: sectionNodeName, type: "main", index: 0 });
+      let prev = sectionNodeName;
+      f.items.forEach((m, mi) => {
+        const mk = `${f.key}:${m.id}`;
+        const copy = replaceVars(edits[mk] ?? m.copy, vars);
+        const tpl = templatesByMsg[mk];
+        const useEvo = f.key === "broadcasts" || f.key === "venta_comunidad";
+        const isApproved = approvalByMsg[mk]?.status === "approved";
+        const nodeName = `${m.id || `msg_${mi}`}${m._custom ? " ✨" : ""}`;
+        const sendNode = useEvo ? {
+          parameters: {
+            url: "={{ $env.EVOLUTION_URL }}/message/sendText/{{ $env.EVOLUTION_INSTANCE }}",
+            method: "POST",
+            sendHeaders: true,
+            headerParameters: { parameters: [{ name: "apikey", value: "={{ $env.EVOLUTION_API_KEY }}" }] },
+            sendBody: true,
+            bodyParameters: { parameters: [
+              { name: "number", value: "={{ $json.phone }}" },
+              { name: "text", value: copy },
+            ]},
+          },
+          type: "n8n-nodes-base.httpRequest",
+        } : {
+          parameters: {
+            url: "=https://graph.facebook.com/v21.0/{{ $env.PHONE_NUMBER_ID }}/messages",
+            method: "POST",
+            sendHeaders: true,
+            headerParameters: { parameters: [{ name: "Authorization", value: "=Bearer {{ $env.WA_ACCESS_TOKEN }}" }] },
+            sendBody: true,
+            jsonBody: JSON.stringify({
+              messaging_product: "whatsapp",
+              to: "={{ $json.phone }}",
+              type: tpl?.name ? "template" : "text",
+              ...(tpl?.name
+                ? { template: { name: tpl.name, language: { code: tpl.language || "es" } } }
+                : { text: { body: copy } }),
+            }),
+          },
+          type: "n8n-nodes-base.httpRequest",
+        };
+        nodes.push({
+          id: `n_${mk}`, name: nodeName, typeVersion: 4,
+          position: [x + 220 + mi * 220, 300 + fi * 40 + (mi % 2) * 60],
+          ...sendNode,
+          notes: `${useEvo ? "🚀 Evolution" : "📋 Meta"} · ${isApproved ? "✓ aprobado" : "⚠ pendiente"}${m._custom ? " · ✨ CUSTOM" : ""}${tpl?.name ? ` · template:${tpl.name}` : ""}`,
+        });
+        if (!connectionsMap[prev]) connectionsMap[prev] = { main: [[]] };
+        connectionsMap[prev].main[0].push({ node: nodeName, type: "main", index: 0 });
+        prev = nodeName;
+      });
+      x += 200 + f.items.length * 220;
+    });
+    return {
+      name: `WAFLOW · ${project.name}`,
+      active: false,
+      nodes,
+      connections: connectionsMap,
+      settings: { executionOrder: "v1" },
+      meta: {
+        project_id: project.id, project_name: project.name, strategy: project.strategy,
+        generated_at: new Date().toISOString(), generated_by: "WAFLOW Autopilot",
+        notes: "Env vars necesarias: EVOLUTION_URL, EVOLUTION_INSTANCE, EVOLUTION_API_KEY, PHONE_NUMBER_ID, WA_ACCESS_TOKEN.",
+      },
+    };
+  };
+
   // Generar workflow n8n exportable
   const generateN8nWorkflow = () => {
     setGeneratingWf(true);
     try {
-      const nodes = [
-        {
-          parameters: { httpMethod: "POST", path: `waflow-${project.id.slice(-8)}`, responseMode: "onReceived" },
-          id: "n_webhook", name: "Webhook entrada lead", type: "n8n-nodes-base.webhook",
-          typeVersion: 1, position: [240, 300],
-        },
-        {
-          parameters: { jsCode: `// Normalizar lead\nconst data = $input.first().json;\nreturn [{ json: { phone: data.phone || data.telefono || data['WhatsApp'], name: data.name || data.nombre || data.email?.split('@')[0] || 'amig@', email: data.email, user_id: data.user_id || data.email, ...data } }];` },
-          id: "n_normalize", name: "Normalizar datos", type: "n8n-nodes-base.code",
-          typeVersion: 2, position: [460, 300],
-        },
-      ];
-      const connectionsMap = {
-        "Webhook entrada lead": { main: [[{ node: "Normalizar datos", type: "main", index: 0 }]] },
-      };
-
-      let x = 680;
-      flows.forEach((f, fi) => {
-        const sectionNodeName = `${f.label} — inicio`;
-        nodes.push({
-          parameters: { unit: "seconds", amount: 1 },
-          id: `n_wait_${f.key}`, name: sectionNodeName, type: "n8n-nodes-base.wait",
-          typeVersion: 1, position: [x, 300 + fi * 40],
-        });
-        const prevNode = fi === 0 ? "Normalizar datos" : `${flows[fi - 1].label} — inicio`;
-        if (!connectionsMap[prevNode]) connectionsMap[prevNode] = { main: [[]] };
-        connectionsMap[prevNode].main[0].push({ node: sectionNodeName, type: "main", index: 0 });
-
-        let prev = sectionNodeName;
-        f.items.forEach((m, mi) => {
-          const mk = `${f.key}:${m.id}`;
-          const copy = replaceVars(edits[mk] ?? m.copy, vars);
-          const tpl = templatesByMsg[mk];
-          const useEvo = f.key === "broadcasts" || f.key === "venta_comunidad";
-          const isApproved = approvalByMsg[mk]?.status === "approved";
-          const nodeName = `${m.id || `msg_${mi}`}${m._custom ? " ✨" : ""}`;
-
-          const sendNode = useEvo ? {
-            parameters: {
-              url: "={{ $env.EVOLUTION_URL }}/message/sendText/{{ $env.EVOLUTION_INSTANCE }}",
-              method: "POST",
-              sendHeaders: true,
-              headerParameters: { parameters: [{ name: "apikey", value: "={{ $env.EVOLUTION_API_KEY }}" }] },
-              sendBody: true,
-              bodyParameters: { parameters: [
-                { name: "number", value: "={{ $json.phone }}" },
-                { name: "text", value: copy },
-              ]},
-            },
-            type: "n8n-nodes-base.httpRequest",
-          } : {
-            parameters: {
-              url: "=https://graph.facebook.com/v21.0/{{ $env.PHONE_NUMBER_ID }}/messages",
-              method: "POST",
-              sendHeaders: true,
-              headerParameters: { parameters: [{ name: "Authorization", value: "=Bearer {{ $env.WA_ACCESS_TOKEN }}" }] },
-              sendBody: true,
-              jsonBody: JSON.stringify({
-                messaging_product: "whatsapp",
-                to: "={{ $json.phone }}",
-                type: tpl?.name ? "template" : "text",
-                ...(tpl?.name
-                  ? { template: { name: tpl.name, language: { code: tpl.language || "es" } } }
-                  : { text: { body: copy } }),
-              }),
-            },
-            type: "n8n-nodes-base.httpRequest",
-          };
-
-          nodes.push({
-            id: `n_${mk}`, name: nodeName, typeVersion: 4,
-            position: [x + 220 + mi * 220, 300 + fi * 40 + (mi % 2) * 60],
-            ...sendNode,
-            notes: `${useEvo ? "🚀 Evolution" : "📋 Meta"} · ${isApproved ? "✓ aprobado" : "⚠ pendiente"}${m._custom ? " · ✨ CUSTOM" : ""}${tpl?.name ? ` · template:${tpl.name}` : ""}`,
-          });
-          if (!connectionsMap[prev]) connectionsMap[prev] = { main: [[]] };
-          connectionsMap[prev].main[0].push({ node: nodeName, type: "main", index: 0 });
-          prev = nodeName;
-        });
-        x += 200 + f.items.length * 220;
-      });
-
-      const workflow = {
-        name: `WAFLOW · ${project.name}`,
-        active: false,
-        nodes,
-        connections: connectionsMap,
-        settings: { executionOrder: "v1" },
-        meta: {
-          project_id: project.id,
-          project_name: project.name,
-          strategy: project.strategy,
-          generated_at: new Date().toISOString(),
-          generated_by: "WAFLOW Autopilot",
-          notes: "Este workflow es un punto de partida. Ajusta los Wait nodes con los delays reales de cada mensaje, añade las ramas conditionales si usas A/B, y define las variables de entorno: EVOLUTION_URL, EVOLUTION_INSTANCE, EVOLUTION_API_KEY, PHONE_NUMBER_ID, WA_ACCESS_TOKEN.",
-        },
-      };
+      const workflow = buildWorkflowJson();
       const blob = new Blob([JSON.stringify(workflow, null, 2)], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -2099,6 +2251,22 @@ function AutopilotPanel({
     } finally {
       setGeneratingWf(false);
     }
+  };
+
+  const openLaunchWizard = () => {
+    // 1) Auto-snapshot pre-launch
+    const snapshotId = onCreateSnapshot && onCreateSnapshot(`Pre-launch · ${new Date().toLocaleString("es-ES")}`);
+    // 2) Build workflow
+    const workflowJson = buildWorkflowJson();
+    // 3) Open wizard
+    setLaunchWizard({ workflowJson, snapshotId });
+  };
+
+  const stopLaunch = async () => {
+    try {
+      await fetch(`${API}/launch/${project.id}/stop`, { method: "POST" });
+      setLaunchStatus(s => ({ ...s, launch: { ...s.launch, status: "stopped" } }));
+    } catch {}
   };
 
   const statusPill = (s) => {
@@ -2171,10 +2339,76 @@ function AutopilotPanel({
         </div>
       </div>
 
+      {/* Live Launch status */}
+      {launchStatus?.active && launchStatus.launch?.status !== "completed" && launchStatus.launch?.status !== "stopped" && (
+        <div className="rounded-xl border-2 overflow-hidden" data-testid="live-launch-card"
+          style={{ borderColor: launchStatus.delivery_rate >= 95 ? "#059669" : "#DC2626" }}>
+          <div className={`px-5 py-3 flex items-center justify-between ${launchStatus.delivery_rate >= 95 ? "bg-emerald-600" : "bg-red-600"} text-white`}>
+            <div className="flex items-center gap-2">
+              <div className={`w-2 h-2 rounded-full bg-white ${launchStatus.launch?.status === "running" ? "animate-pulse" : ""}`} />
+              <div className="text-[11px] uppercase tracking-widest opacity-90">Lanzamiento activo</div>
+              <div className="font-bold text-sm">·</div>
+              <div className="font-bold text-sm">Launch <code className="font-mono text-[11px]">{launchStatus.launch?.launch_id}</code></div>
+            </div>
+            <button onClick={stopLaunch} data-testid="launch-stop-btn"
+              className="text-[11px] px-2 py-1 bg-white/20 hover:bg-white/30 rounded text-white">
+              ⏹ Cancelar
+            </button>
+          </div>
+          <div className="p-5 bg-white">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+              <div className="bg-stone-50 border border-stone-200 rounded p-3">
+                <div className="text-[10px] text-stone-500 uppercase tracking-widest">Enviados</div>
+                <div className="text-2xl font-bold text-stone-900">{launchStatus.stats?.sent ?? 0}</div>
+              </div>
+              <div className="bg-emerald-50 border border-emerald-200 rounded p-3">
+                <div className="text-[10px] text-emerald-700 uppercase tracking-widest">Entregados</div>
+                <div className="text-2xl font-bold text-emerald-800">{launchStatus.stats?.delivered ?? 0}</div>
+              </div>
+              <div className="bg-sky-50 border border-sky-200 rounded p-3">
+                <div className="text-[10px] text-sky-700 uppercase tracking-widest">Leídos</div>
+                <div className="text-2xl font-bold text-sky-800">{launchStatus.stats?.read ?? 0}</div>
+              </div>
+              <div className="bg-red-50 border border-red-200 rounded p-3">
+                <div className="text-[10px] text-red-700 uppercase tracking-widest">Fallidos</div>
+                <div className="text-2xl font-bold text-red-800">{launchStatus.stats?.failed ?? 0}</div>
+              </div>
+            </div>
+            <div className="mb-1 flex items-center justify-between text-[11px]">
+              <span className="text-stone-600 font-medium">Tasa de entrega</span>
+              <span className="text-stone-900 font-bold">{launchStatus.delivery_rate}%</span>
+            </div>
+            <div className="bg-stone-200 rounded-full h-2 mb-2">
+              <div className={`h-full rounded-full transition-all ${launchStatus.delivery_rate >= 95 ? "bg-emerald-500" : "bg-indigo-500"}`} style={{ width: `${Math.min(100, launchStatus.delivery_rate)}%` }} />
+            </div>
+            <div className="text-[10.5px] text-stone-500">
+              Polling automático cada 30s · Auto-congelar a ≥ 95% · Último refresh {new Date().toLocaleTimeString("es-ES")}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Acciones */}
       <div className="bg-white border border-stone-200 rounded-xl p-5">
         <div className="text-[11px] font-semibold tracking-widest text-stone-500 uppercase mb-4">Acciones</div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {/* Botón principal Lanzar ahora */}
+          <button onClick={openLaunchWizard}
+            disabled={readyPct < 100 || project.status === "frozen" || launchStatus?.active}
+            data-testid="autopilot-launch-now"
+            className="col-span-1 md:col-span-2 flex items-center gap-3 p-4 bg-gradient-to-br from-red-600 to-orange-600 border-2 border-red-700 rounded-lg hover:shadow-lg text-left disabled:opacity-40 disabled:cursor-not-allowed text-white">
+            <div className="text-3xl">🚀</div>
+            <div className="flex-1">
+              <div className="text-base font-bold">Lanzar ahora</div>
+              <div className="text-[11.5px] opacity-90">
+                {readyPct < 100 ? `Termina el checklist primero (${readyPct}% completado)` :
+                 project.status === "frozen" ? "Descongela el proyecto para lanzar" :
+                 launchStatus?.active ? "Lanzamiento ya en curso" :
+                 "Snapshot automático + deploy a n8n + polling en vivo + auto-freeze al 95%"}
+              </div>
+            </div>
+            <Zap size={20} />
+          </button>
           <button onClick={generateN8nWorkflow} disabled={generatingWf}
             data-testid="autopilot-export-n8n"
             className="flex items-center gap-3 p-4 bg-gradient-to-br from-purple-50 to-indigo-50 border-2 border-purple-200 rounded-lg hover:border-purple-400 text-left disabled:opacity-50">
@@ -2258,6 +2492,18 @@ function AutopilotPanel({
             ))}
           </div>
         </div>
+      )}
+
+      {/* Launch Wizard modal */}
+      {launchWizard && (
+        <LaunchWizard
+          project={project}
+          connections={connections}
+          workflowJson={launchWizard.workflowJson}
+          snapshotId={launchWizard.snapshotId}
+          onDeployed={() => { /* polling empezará al próximo ciclo */ }}
+          onClose={() => setLaunchWizard(null)}
+        />
       )}
     </div>
   );
@@ -4137,6 +4383,7 @@ function ProjectWorkspace({ project, onBack, me, onUpdateProject }) {
     };
     setSnapshots(s => [snap, ...s]);
     logHistory("creó snapshot", label);
+    return snap.id;
   };
   const restoreSnapshot = (s) => {
     if (!confirm(`¿Restaurar proyecto al estado "${s.label}"?`)) return;
@@ -4289,9 +4536,11 @@ function ProjectWorkspace({ project, onBack, me, onUpdateProject }) {
               approvalByMsg={approvalByMsg}
               snapshots={snapshots}
               flows={FLOWS}
-              onCreateSnapshot={() => {
-                const label = prompt("Etiqueta del snapshot:", `Autopilot · ${new Date().toLocaleDateString("es-ES")}`);
-                if (label) createSnapshot(label);
+              onCreateSnapshot={(label) => {
+                if (label) return createSnapshot(label);
+                const userLabel = prompt("Etiqueta del snapshot:", `Autopilot · ${new Date().toLocaleDateString("es-ES")}`);
+                if (userLabel) return createSnapshot(userLabel);
+                return null;
               }}
               onFreezeToggle={() => {
                 const newStatus = project.status === "frozen" ? "active" : "frozen";
@@ -4299,6 +4548,7 @@ function ProjectWorkspace({ project, onBack, me, onUpdateProject }) {
                 logHistory(newStatus === "frozen" ? "congeló proyecto" : "descongeló proyecto", "");
               }}
               onGoToTab={(tab) => setActiveTab(tab)}
+              onUpdateProject={onUpdateProject}
             />
           </main>
         )}
