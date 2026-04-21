@@ -2031,7 +2031,7 @@ function AutopilotPanel({
 
           const sendNode = useEvo ? {
             parameters: {
-              url: "={{ $env.EVOLUTION_URL }}/message/sendText/={{ $env.EVOLUTION_INSTANCE }}",
+              url: "={{ $env.EVOLUTION_URL }}/message/sendText/{{ $env.EVOLUTION_INSTANCE }}",
               method: "POST",
               sendHeaders: true,
               headerParameters: { parameters: [{ name: "apikey", value: "={{ $env.EVOLUTION_API_KEY }}" }] },
@@ -2044,7 +2044,7 @@ function AutopilotPanel({
             type: "n8n-nodes-base.httpRequest",
           } : {
             parameters: {
-              url: `=https://graph.facebook.com/v21.0/{{ $env.PHONE_NUMBER_ID }}/messages`,
+              url: "=https://graph.facebook.com/v21.0/{{ $env.PHONE_NUMBER_ID }}/messages",
               method: "POST",
               sendHeaders: true,
               headerParameters: { parameters: [{ name: "Authorization", value: "=Bearer {{ $env.WA_ACCESS_TOKEN }}" }] },

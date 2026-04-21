@@ -97,13 +97,35 @@ Editor colaborativo multi-proyecto de secuencias de mensajes de WhatsApp para ag
   - Pinta burbujas tipo WhatsApp con multi-turn
   - Usa el system_prompt actual ya renderizado con variables
 
+### Iter 5 (21 ene 2026) — Autopilot de lanzamiento
+- **Nueva pestaña "Autopilot"** (primera en la barra, icono ⚡):
+  - Header hero: `{readyPct}% listo para lanzar` con barra de progreso; cambia a gradiente slate-oscuro + "🔒 Proyecto congelado" cuando status='frozen'
+  - Timeline de 5 fases: Setup → Copies → Creativos → Deploy → Launch (con emojis, estados done/active/pending)
+  - **Pre-flight checklist** con 7-8 items booleanos calculados en tiempo real:
+    - Variables rellenas (% editables con valor)
+    - Aprobación del cliente (lee el review_token, detecta `locked` y `signer_name`)
+    - Plantillas Meta marcadas (mínimo 3 templates asignadas)
+    - Meta Cloud API configurada (phone_id + access_token)
+    - n8n webhook configurado
+    - **Evolution API** (solo si hay mensajes en broadcasts/venta_comunidad)
+    - Creativos en mensajes clave (% de primeros 2 de cada flujo)
+    - Notificaciones Slack/Discord (opcional)
+  - Cada check es clickable: navega a la pestaña correspondiente
+  - Status pill: ✓ OK / ⚠ AVISO / ✗ FALTA
+- **Acciones 1-click**:
+  - **Exportar workflow n8n** (`.json` ~100KB): Webhook entrada → Code normaliza → Wait por flujo → httpRequest por mensaje. Usa n8n-nodes-base.httpRequest con expressions (`={{ $env.EVOLUTION_URL }}...`, `={{ $env.PHONE_NUMBER_ID }}...`). Detecta automáticamente si usar Evolution (broadcasts/venta_comunidad) o Meta Graph (resto con template si está marcado). Metadata incluye project_id, estrategia, timestamp, notas de env vars requeridas.
+  - **Crear snapshot manual** con label custom
+  - **Abrir link mágico cliente** (link público, detecta si ya firmado)
+  - **Descargar PDF resumen** (incluye firma si está locked)
+  - **Congelar/Descongelar proyecto**: persiste `project.status='frozen'` en projects_list; header muestra badge "🔒 CONGELADO"
+- **onUpdateProject(id, patch)** callback propagado de MainApp → ProjectWorkspace para persistir cambios de metadata (status, etc.)
+- **Fix menor**: URL del nodo Evolution en JSON exportado ahora usa prefix `=` (expression mode correcto en n8n)
+
 ## Testing
-- Iter 4: **9/9 backend PASS** + **6/6 iter2 regresión** + 5/6 iter3 (la 1 que falla es un test fixture obsoleto con PID que ya no existe, NO es bug real). Frontend: 7/9 verificados end-to-end + 2 por código.
-- Durante iter4 el testing_agent detectó y fixeó 2 bugs críticos introducidos accidentalmente: props de MessageCard (isCustom, canUseEvolution...) no destructuradas + useState `showEvoSend` faltante. Fixes aplicados.
+- Iter 5: **19/19 backend** (4 nuevos + 15 regresión iter3+4) + **14/14 frontend** end-to-end ✅ incluyendo download JSON n8n 102KB con 81 nodes parseables, freeze/unfreeze con badge, checklist navegación, snapshot via prompt, todas las regresiones iter-4 estables.
 
 ## Known mocked / not-yet-wired
-- MonitoringPanel mostrará MOCK hasta que tus workflows n8n empiecen a enviar events a `/api/events`.
-- Para Meta Cloud API templates oficiales, el endpoint `/api/whatsapp/send` ya existe pero el frontend no tiene aún botón "Enviar via Meta template" (la pestaña Template del MessageCard sí permite guardar la metadata).
+- `MonitoringPanel`: LIVE cuando n8n envíe events reales, MOCK mientras tanto (fallback automático).
 
 ## Next Action Items
 - **P1** Añadir botón "Enviar via Meta template" en MessageCard para flujos no-broadcast (usar TemplateMeta.name + /api/whatsapp/send)
