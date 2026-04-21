@@ -48,9 +48,30 @@ Editor colaborativo multi-proyecto de secuencias de mensajes de WhatsApp para ag
     - Persistencia real en backend (sobrevive a recargas)
 - Fix: tarjeta de proyecto con fecha "—" cuando falta `updated_at`/`created_at`.
 
+### Iter 3 (21 ene 2026) — PDF resumen, webhooks, adjuntar creativos, mini-mapas, var picker
+- **PDF resumen descargable**: endpoint `GET /api/review/{token}/summary.pdf` genera PDF con ReportLab (proyecto, stats, detalle por mensaje aprobado/con cambios + notas del cliente). Botón visible al pie de la PublicReviewPage.
+- **Webhooks Slack/Discord al ≥80% de aprobación**:
+  - Endpoint `POST /api/review/{token}/notify` idempotente (flag `notified_80_at` en `wa_editor:p:{pid}:notify_config`)
+  - UI en Conexiones (sección "🔔 Notificaciones al equipo" con 2 URLs + botón resetear)
+  - Trigger automático desde PublicReviewPage cuando aprobaciones/total cruzan 80%
+- **Adjuntar creativo desde cada mensaje**:
+  - `AttachCreativeModal` con 2 tabs: Biblioteca (creativos existentes) + "+ Subir nuevo"
+  - Botón "📎 Adjuntar creativo" en la barra de acciones de cada MessageCard
+  - Handlers `attachCreative`/`removeCreativeAssoc` en ProjectWorkspace con log en historial
+- **Mini-mapas por flujo en pestaña Mapa**:
+  - Componente `FlowMiniMap` que muestra mensajes como chips conectados por →
+  - Si el flujo tiene ramas, las muestra como bloques separados
+  - Click en un chip abre el flujo en pestaña Flujos
+- **Variables UI mejorada**:
+  - `VarPicker` dentro del modo edición de MessageCard: buscador + variables agrupadas por categoría + sección "🤖 Runtime (rellena n8n)" con NOMBRE, USER_ID, EMAIL, PHONE
+  - Click en variable → inserta `{VAR_NAME}` en la posición del cursor del textarea
+  - Cada variable muestra su descripción (valor actual o hint de runtime)
+  - Panel lateral Variables: bloque informativo explicando por qué hay variables 🔒 bloqueadas (técnicas/tracking) + tooltip en cada botón de candado
+
 ## Testing
 - Iter 1: 7/7 backend tests + flujo UI end-to-end ✅
-- Iter 2: 6/6 nuevos backend tests (review endpoints) + flujo UI completo (link mágico generación, copia, apertura, approve, persistencia tras reload) ✅
+- Iter 2: 6/6 nuevos backend tests (review endpoints) + flujo UI completo ✅
+- Iter 3: 13/13 backend tests (7 nuevos PDF+notify + 6 regresión iter2) + 5/6 flujos UI (el 6º gated por modal preexistente, código verificado) ✅
 
 ## Known mocked / not-yet-wired
 - `MonitoringPanel`: datos **MOCK** (`generateMockEvents`). Endpoint `/api/events` real ya existe pero la UI no lo consume.
@@ -59,11 +80,12 @@ Editor colaborativo multi-proyecto de secuencias de mensajes de WhatsApp para ag
 ## Next Action Items
 - **P1** Cablear MonitoringPanel al endpoint real `GET /api/events?project_id=...`
 - **P1** Añadir mini chat de prueba en AIPromptPanel usando `/api/ai/test-chat`
-- **P2** Añadir `data-testid` a botones y tabs pre-existentes para tests robustos
+- **P2** Añadir `data-testid` a botones y tabs pre-existentes
 - **P2** Migrar `@app.on_event("shutdown")` a lifespan handler FastAPI
-- **P2** Extraer `PublicReviewPage` a su propio archivo (ahora que es ruta standalone)
+- **P2** Refactor de App.jsx (~3800 líneas) en sub-componentes por pestaña
 - **P3** Rate-limiting por token en `/api/review/*`
-- **P3** Refactor opcional de App.jsx (3512 líneas) en sub-componentes por pestaña
+- **P3** Debounce del notify trigger en PublicReviewPage
+- **P3** UX: desacoplar prompt "Cómo te llamas?" del click Editar (si ya existe nombre no bloquea)
 
 ## Credentials / Keys
 - `EMERGENT_LLM_KEY` en `/app/backend/.env`
