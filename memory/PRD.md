@@ -117,7 +117,13 @@ Editor colaborativo multi-proyecto de secuencias de mensajes de WhatsApp para ag
 - **ConnectionsPanel**: nuevo campo "Webhook deploy (🚀 Lanzar ahora)" (`n8nDeployWebhookUrl`)
 - **createSnapshot** ahora devuelve el ID del snapshot creado (necesario para pasarlo al wizard)
 
-### Iter 9 (21 feb 2026) — Checklist Cliente (Client Intake)
+### Iter 10 (21 feb 2026) — Fixes operativos pre-flight + Evolution UI
+- **Fix A — tooltip Evolution API ya no tapa inputs**: movido el help-box "💡 JID del grupo..." ARRIBA de los campos API Key/Instancia (antes estaba entre inputs y botón). Cambiados los 3 `grid-cols-2` de ConnectionsPanel (Meta, n8n, Evolution) a `grid-cols-1 md:grid-cols-2` para que en viewports estrechos (iframe Emergent, ventana pequeña) los inputs se apilen verticalmente sin romper labels.
+- **Fix B — Aprobación del cliente con 100% ya no sale warn**: `AutopilotPanel` línea ~2170 ahora considera `approvalPct === 100` como "ok" (antes solo firma → "ok", 80-99% y 100% → "warn"). 100% = verde, 80-99% = amber, <80% = rojo.
+- **Fix C — Plantillas Meta auto-default en flujos 1-1**: introducida constante `EVOLUTION_FLOW_KEYS = Set("broadcasts","venta_comunidad")`. Todos los demás flujos (flujo_a, pre_webinar_1a1, venta_1a1, replay) asumen plantilla Meta por defecto sin necesidad de marcado manual. El checker pre-flight ahora cuenta TODOS los mensajes de flujos Meta como "templated". En el export/payload JSON se auto-genera `meta_template: {isTemplate:true, auto:true, name:"waflow_{flowKey}_{msgId}", language:"es"}` cuando no hay template explícito. Usuario sigue pudiendo personalizar (nombre Meta real, language, status) en la tarjeta del mensaje para sobrescribir el auto-default.
+- **MessageCard badge**: añadido prop `isMetaFlow` y badge azul claro "📋 Meta auto" cuando el mensaje pertenece a un flujo Meta y no tiene template custom. Tooltip explica el naming convention.
+
+
 - **Feature nueva completa** solicitada por el usuario: pestaña + link público `/intake/{token}` donde el cliente rellena variables y sube creativos que la agencia le ha pedido.
 - **Decisiones del usuario**: (1c) mixto auto-sugeridos + toggle manual; (2b) upload real a MongoDB GridFS, límite 10 MB; (3b) pending-review — agencia aprueba/rechaza antes de aplicar al proyecto; (4b) notificación Slack/Discord al completar; (5c) sin recordatorios automáticos.
 - **Backend — 9 endpoints nuevos** (server.py:880-1180):

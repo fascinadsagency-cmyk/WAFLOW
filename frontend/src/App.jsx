@@ -745,6 +745,7 @@ function MessageCard({
   isCustom = false, onRemoveCustom = null,
   canUseEvolution = false, evolutionConfig = null, onEvolutionSend = null,
   onMetaTestSend = null, metaConfig = null,
+  isMetaFlow = false,
 }) {
   const [expanded, setExpanded] = useState(true);
   const [editing, setEditing] = useState(false);
@@ -785,7 +786,13 @@ function MessageCard({
   };
 
   const tplBadge = () => {
-    if (!templateMeta || !templateMeta.isTemplate) return null;
+    if (!templateMeta || !templateMeta.isTemplate) {
+      // Auto-template para flujos Meta 1-1 sin override manual
+      if (isMetaFlow) {
+        return <span className="text-[10px] bg-sky-50 text-sky-700 border border-sky-200 px-1.5 py-0.5 rounded" title="Este mensaje se enviará como plantilla Meta oficial. Nombre auto: waflow_{flowKey}_{msgId}. Puedes personalizar la plantilla arriba si necesitas otro nombre o estado.">📋 Meta auto</span>;
+      }
+      return null;
+    }
     const map = { PENDING: "bg-stone-100 text-stone-700 border-stone-200", APPROVED: "bg-emerald-50 text-emerald-700 border-emerald-200", REJECTED: "bg-red-50 text-red-700 border-red-200" };
     const cls = map[templateMeta.status || "PENDING"];
     return <span className={`text-[10px] border px-1.5 py-0.5 rounded ${cls}`}>Meta: {templateMeta.status || "PENDING"}</span>;
@@ -1172,6 +1179,7 @@ function FlowView({
         onSetApproval={a => onSetApproval(mk, a)}
         templateMeta={templatesByMsg[mk]}
         onSetTemplateMeta={t => onSetTemplateMeta(mk, t)}
+        isMetaFlow={!canUseEvolution}
         me={me}
         onAttachCreative={onAttachCreative}
         onRemoveCreativeAssoc={onRemoveCreativeAssoc}
@@ -2154,7 +2162,21 @@ function AutopilotPanel({
   const approvalPct = totalMsgs > 0 ? Math.round((approvedMsgs / totalMsgs) * 100) : 0;
 
   const templatedMsgs = Object.values(templatesByMsg || {}).filter(t => t && t.name).length;
-  const nonEvoFlowMsgs = flows.filter(f => f.key !== "broadcasts" && f.key !== "venta_comunidad").reduce((s, f) => s + f.items.length, 0);
+  // Flujos Meta (1-1 individual) vs Evolution (broadcasts/comunidad).
+  // Por convención, todos los flujos NO-Evolution usan plantillas Meta por defecto
+  // sin necesidad de marcarlos uno a uno. El checker los cuenta como "ok".
+  const EVOLUTION_FLOW_KEYS = new Set(["broadcasts", "venta_comunidad"]);
+  const metaFlowMsgs = flows
+    .filter(f => !EVOLUTION_FLOW_KEYS.has(f.key))
+    .reduce((s, f) => s + f.items.length, 0);
+  const nonEvoFlowMsgs = metaFlowMsgs;
+  // Un mensaje de flujo Meta "cuenta como template" si:
+  //  (a) el usuario lo ha marcado explícitamente (templatesByMsg[mk].isTemplate) o
+  //  (b) pertenece a un flujo Meta (asume auto-template: waflow_{flowKey}_{msgId}).
+  const autoOrManualTemplatedMsgs = flows.reduce((acc, f) => {
+    if (EVOLUTION_FLOW_KEYS.has(f.key)) return acc;
+    return acc + f.items.length; // todos los mensajes Meta cuentan como "templated"
+  }, 0);
 
   const hasMeta = !!(connections.phoneNumberId && connections.accessToken);
   const hasN8n = !!connections.n8nWebhookUrl;
@@ -2167,8 +2189,8 @@ function AutopilotPanel({
 
   const checklist = [
     { key: "vars", label: "Variables rellenas", status: varsPct === 100 ? "ok" : varsPct >= 70 ? "warn" : "fail", detail: `${varsFilled.length}/${editableVars.length} (${varsPct}%)`, goTab: "flows" },
-    { key: "approval", label: "Aprobación del cliente", status: reviewSignature?.locked ? "ok" : approvalPct >= 80 ? "warn" : "fail", detail: reviewSignature?.locked ? `🔐 Firmado por ${reviewSignature.signature?.signer_name}` : `${approvedMsgs}/${totalMsgs} aprobados (${approvalPct}%)`, goTab: "client" },
-    { key: "templates", label: "Plantillas Meta marcadas", status: templatedMsgs >= Math.min(nonEvoFlowMsgs, 3) ? "ok" : templatedMsgs > 0 ? "warn" : "fail", detail: `${templatedMsgs} mensajes con template`, goTab: "flows" },
+    { key: "approval", label: "Aprobación del cliente", status: reviewSignature?.locked || approvalPct >= 100 ? "ok" : approvalPct >= 80 ? "warn" : "fail", detail: reviewSignature?.locked ? `🔐 Firmado por ${reviewSignature.signature?.signer_name}` : `${approvedMsgs}/${totalMsgs} aprobados (${approvalPct}%)`, goTab: "client" },
+    { key: "templates", label: "Plantillas Meta marcadas", status: autoOrManualTemplatedMsgs >= nonEvoFlowMsgs ? "ok" : templatedMsgs > 0 ? "warn" : "fail", detail: templatedMsgs > 0 ? `${templatedMsgs} custom + ${autoOrManualTemplatedMsgs - templatedMsgs} auto (Meta)` : `${autoOrManualTemplatedMsgs} mensajes Meta (auto-template)`, goTab: "flows" },
     { key: "meta", label: "Meta Cloud API configurada", status: hasMeta ? "ok" : "fail", detail: hasMeta ? "Phone ID + Access Token presentes" : "Falta Phone ID o Access Token", goTab: "connections" },
     { key: "n8n", label: "n8n webhook configurado", status: hasN8n ? "ok" : "warn", detail: hasN8n ? "Webhook URL presente" : "Sin webhook URL", goTab: "connections" },
     ...(needsEvo ? [{ key: "evo", label: "Evolution API (broadcasts / comunidad)", status: hasEvo ? "ok" : "fail", detail: hasEvo ? `Instancia ${connections.evolution.instance}` : "Falta configurar", goTab: "connections" }] : []),
@@ -4852,6 +4874,13 @@ function ProjectWorkspace({ project, onBack, me, onUpdateProject }) {
           const skip = computeSkipCondition(f.key, m);
           const mk = `${f.key}:${m.id || i}`;
           const msgCr = creatives.filter(cr => cr.messageKey === mk);
+          const isMetaFlow = !(f.key === "broadcasts" || f.key === "venta_comunidad");
+          const explicitTpl = templatesByMsg[mk];
+          // Auto-generar meta_template para flujos individuales sin override manual
+          const autoTpl = isMetaFlow && !(explicitTpl?.isTemplate)
+            ? { isTemplate: true, auto: true, name: `waflow_${f.key}_${(m.id || i).toString().toLowerCase()}`, language: "es" }
+            : null;
+          const finalTpl = explicitTpl?.isTemplate ? explicitTpl : autoTpl;
           return {
             ...m, copy: c,
             copy_rendered: replaceVars(c, vars),
@@ -4859,7 +4888,7 @@ function ProjectWorkspace({ project, onBack, me, onUpdateProject }) {
             ...(skip ? { skip_condition: skip } : {}),
             ...(msgCr.length ? { creatives: msgCr } : {}),
             ...(variantsByMsg[mk]?.enabled ? { ab_variants: variantsByMsg[mk] } : {}),
-            ...(templatesByMsg[mk]?.isTemplate ? { meta_template: templatesByMsg[mk] } : {}),
+            ...(finalTpl ? { meta_template: finalTpl } : {}),
             ...(approvalByMsg[mk] ? { approval: approvalByMsg[mk] } : {}),
           };
         });
