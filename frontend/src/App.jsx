@@ -2665,7 +2665,22 @@ function AIPromptPanel({ aiPrompt, setAIPrompt, vars }) {
               <Bot size={14} className="text-indigo-700" />
               <div className="text-sm font-semibold text-indigo-900">Chat de prueba · Claude Sonnet 4.5</div>
             </div>
-            <button onClick={() => setMessages([])} className="text-[11px] text-stone-600 hover:text-stone-900">Limpiar</button>
+            <div className="flex items-center gap-3">
+              <span
+                data-testid="ai-llm-usage-badge"
+                title="Cada mensaje consume créditos del Emergent LLM key (Profile → Universal Key → Add Balance para recargar)"
+                className={`text-[10.5px] font-medium px-2 py-0.5 rounded-full border ${
+                  messages.filter(m => m.role === "user").length >= 20
+                    ? "bg-red-50 border-red-200 text-red-800"
+                    : messages.filter(m => m.role === "user").length >= 10
+                    ? "bg-amber-50 border-amber-200 text-amber-800"
+                    : "bg-indigo-50 border-indigo-200 text-indigo-700"
+                }`}
+              >
+                💳 {messages.filter(m => m.role === "user").length} mensajes · créditos Emergent LLM
+              </span>
+              <button onClick={() => setMessages([])} className="text-[11px] text-stone-600 hover:text-stone-900">Limpiar</button>
+            </div>
           </div>
           <div className="p-3 max-h-[350px] overflow-y-auto space-y-2 bg-stone-50">
             {messages.length === 0 && (
@@ -5025,7 +5040,7 @@ function PublicReviewPage({ token }) {
 function ConfirmDialog({ open, title, message, confirmLabel = "Confirmar", cancelLabel = "Cancelar", danger = false, onConfirm, onCancel }) {
   if (!open) return null;
   return (
-    <div className="fixed inset-0 bg-black/60 z-[60] flex items-center justify-center p-4" onClick={onCancel}>
+    <div className="fixed inset-0 bg-black/60 z-[70] flex items-center justify-center p-4" onClick={onCancel}>
       <div className="bg-white rounded-xl shadow-2xl max-w-md w-full overflow-hidden" onClick={e => e.stopPropagation()}>
         <div className="p-6">
           <div className={`text-lg font-bold ${danger ? "text-red-700" : "text-stone-900"} mb-2`}>{title}</div>

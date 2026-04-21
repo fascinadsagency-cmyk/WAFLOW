@@ -265,7 +265,11 @@ async def test_connection(body: TestConnectionBody):
                 url = body.config.get("url")
                 if not url:
                     return {"ok": False, "error": "Falta URL del webhook"}
-                r = await hc.post(url, json={"_waflow_test": True, "ts": datetime.now(timezone.utc).isoformat()})
+                r = await hc.post(
+                    url,
+                    json={"_waflow_test": True, "ts": datetime.now(timezone.utc).isoformat()},
+                    headers={"X-WAFLOW-Test": "1"},
+                )
                 return {"ok": r.status_code < 400, "detail": f"HTTP {r.status_code} — webhook responde"}
 
             else:
@@ -757,17 +761,20 @@ async def launch_status(project_id: str):
     if not launch:
         return {"active": False}
 
-    # Stats desde events del proyecto
-    cursor = db.events.find({"project_id": project_id}, {"_id": 0}).limit(5000)
-    events = await cursor.to_list(5000)
+    # Stats desde events del proyecto — aggregation en MongoDB (sin límite de 5000)
+    pipeline = [
+        {"$match": {"project_id": project_id}},
+        {"$group": {"_id": "$event", "count": {"$sum": 1}}},
+    ]
+    counts_by_event = {doc["_id"]: doc["count"] async for doc in db.events.aggregate(pipeline)}
     stats = {
-        "sent": sum(1 for e in events if e.get("event") == "message_sent"),
-        "delivered": sum(1 for e in events if e.get("event") == "message_delivered"),
-        "read": sum(1 for e in events if e.get("event") == "message_read"),
-        "failed": sum(1 for e in events if e.get("event") == "message_failed"),
-        "clicked": sum(1 for e in events if e.get("event") == "button_clicked"),
-        "replied": sum(1 for e in events if e.get("event") == "reply_received"),
-        "total_events": len(events),
+        "sent": counts_by_event.get("message_sent", 0),
+        "delivered": counts_by_event.get("message_delivered", 0),
+        "read": counts_by_event.get("message_read", 0),
+        "failed": counts_by_event.get("message_failed", 0),
+        "clicked": counts_by_event.get("button_clicked", 0),
+        "replied": counts_by_event.get("reply_received", 0),
+        "total_events": sum(counts_by_event.values()),
     }
     delivery_rate = round((stats["delivered"] / stats["sent"] * 100), 1) if stats["sent"] > 0 else 0
     read_rate = round((stats["read"] / stats["delivered"] * 100), 1) if stats["delivered"] > 0 else 0

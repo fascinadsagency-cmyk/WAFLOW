@@ -119,6 +119,19 @@ Editor colaborativo multi-proyecto de secuencias de mensajes de WhatsApp para ag
 
 ## Testing
 - Iter 6: **13/13 backend** (8 nuevos launch + 5 regresión) + **~85% frontend** end-to-end ✅
+- Iter 7 (21 feb 2026): **13/13 backend** (7 test-connection + 3 smoke + 2 launch + 1 review) + **~95% frontend** ✅
+
+### Iter 7 (21 feb 2026) — Validación beta interna
+- **useConfirm global** (ConfirmProvider + ConfirmDialog z-[70] + hook `useConfirm()`) montado en `<App>` para reemplazar `window.confirm` (bloqueado en iframe Emergent)
+- **Botones "Probar conexión"** para Meta/Evolution/n8n en ConnectionsPanel con data-testid (`test-meta-btn`, `test-evolution-btn`) — backend `POST /api/test-connection` valida credenciales sin lanzar campañas
+- **Botón "Test Send"** Meta (`meta-send-test-btn`) para enviar mensaje real antes del launch
+- **Checker reforzado**: detección de placeholders sin cerrar, límites de longitud, variables sin definir, botones sin user_id
+- **Fix compilación**: `testing`/`testResult` duplicados en ConnectionsPanel → renombrados a `sendingMsg`/`sendMsgResult`; código huérfano `irmDialog(null)}` al final del archivo → eliminado
+- **P1 resuelto**: `launch_status` migrado de `.find().to_list(5000)` a **aggregation pipeline `$group`** → sin límite, más eficiente, soporta webinars >5k events
+- **P1 resuelto**: Indicador de uso LLM en AIPromptPanel (badge `💳 N mensajes · créditos Emergent LLM` con gradiente indigo→amber→red según volumen)
+- **Hardening `/api/test-connection`**: header `X-WAFLOW-Test: 1` en POST a webhooks n8n para que el cliente filtre payloads de prueba
+- Fixes backend: aggregation mantiene 13/13 tests en verde (pytest_iter7.xml)
+- Fix menor: `App.jsx` comentario `fixed inset-0 z-[60]` → `z-[70]` para ConfirmDialog (garantiza estar sobre todos los modales z-50)
 - El único flujo NO testeable end-to-end en UI fue clicar el botón con `readyPct=100` (requiere seed de todos los checks OK). El endpoint `/api/launch/deploy` sí está 100% cubierto por pytest (httpbin 200 success + httpbin 500 fail).
 - Post-iter6 improvements aplicados:
   - `complete` y `stop` ahora borran `active_launch` (no solo cambian status) → más robusto, no deja cards fantasma
@@ -160,13 +173,17 @@ Editor colaborativo multi-proyecto de secuencias de mensajes de WhatsApp para ag
 - `MonitoringPanel`: LIVE cuando n8n envíe events reales, MOCK mientras tanto (fallback automático).
 
 ## Next Action Items
+- **P1** Migrar `stopLaunch` de window.confirm → `useConfirm()` (aunque stopLaunch actual no usa confirm, añadir confirmación custom sería coherente con UX)
 - **P1** Añadir botón "Enviar via Meta template" en MessageCard para flujos no-broadcast (usar TemplateMeta.name + /api/whatsapp/send)
 - **P1** Configurar tus workflows n8n reales para que envíen events a `POST /api/events` → Monitor en LIVE
-- **P2** Mostrar todas las AddBars+badges de flujos incluso cuando están colapsados (mejora UX solicitada por testing)
-- **P2** Refactor de MessageCard en sub-componentes (400+ líneas, ya se rompió 1 vez al añadir props)
-- **P2** Exportar workflow n8n desde el proyecto (con flujos custom incluidos)
+- **P2** Refactorizar `App.jsx` (5196 líneas): extraer `ConnectionsPanel`, `AutopilotPanel`, `LaunchWizard`, `MessageCard`, `AIPromptPanel`, `ConfirmProvider/Dialog` a archivos separados en `src/panels/` y `src/hooks/`
+- **P2** Mostrar todas las AddBars+badges de flujos incluso cuando están colapsados
+- **P2** Crear flujos desde cero (hoy solo se añaden mensajes a las 6 plantillas)
+- **P2** Historial empty state con copy explicativo cuando 0 snapshots
+- **P2** Multi-tenant auth (Login/Register) — pendiente tras validación beta
 - **P3** Rate-limiting en /api/review/* y /api/evolution/send
-- **P3** Fix hash `/sign` para que mismo contenido firmado dos veces de mismo hash (separar content_hash de signed_at)
+- **P3** Fix hash `/sign` para que mismo contenido firmado dos veces no dé mismo hash (separar content_hash de signed_at)
+- **P3** Persistencia `waflow_me` entre sesiones (confirmar que el shim guarda en backend y no solo memory)
 
 ## Credentials / Keys
 - `EMERGENT_LLM_KEY` en `/app/backend/.env`
