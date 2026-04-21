@@ -1305,6 +1305,232 @@ function MessageCard({
     </div>
   );
 }
+// Modal: recorrer un flujo completo enviando todos los mensajes al teléfono QA
+// con delay configurable. Polling cada 2s al backend run status.
+function FlowTestRunModal({ flow, vars, edits, creatives, templatesByMsg, projectId, onClose }) {
+  const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
+  const [to, setTo] = useState("");
+  const [speedup, setSpeedup] = useState(15);
+  const [run, setRun] = useState(null); // { run_id, total, done, status, results[] }
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState(null);
+
+  const buildItems = () => {
+    return flow.items.map((m, i) => {
+      const mk = `${flow.key}:${m.id || i}`;
+      const effectiveCopy = edits[mk] ?? m.copy ?? "";
+      // Detectar variables del copy en orden
+      const varNames = [];
+      const reVar = /\{([A-Z_][A-Z0-9_]*)\}/g;
+      let match;
+      while ((match = reVar.exec(effectiveCopy)) !== null) {
+        if (!varNames.includes(match[1])) varNames.push(match[1]);
+      }
+      const params = varNames.map(n => {
+        const v = vars.find(x => x.name === n);
+        return v?.value || `{${n}}`;
+      });
+      const tpl = templatesByMsg[mk];
+      const templateName = tpl?.name || `waflow_${flow.key}_${(m.id || `msg${i}`).toString().toLowerCase()}`;
+      const language = tpl?.language || "es";
+      const firstImg = creatives.find(c => c.messageKey === mk && c.type === "image" && (c.url || "").startsWith("http"));
+      return {
+        msg_key: mk,
+        template_name: templateName,
+        language,
+        params,
+        header_media_url: firstImg?.url || null,
+        header_media_type: firstImg ? "image" : null,
+      };
+    });
+  };
+
+  const items = React.useMemo(buildItems, [flow, vars, edits, creatives, templatesByMsg]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Poll del estado del run
+  useEffect(() => {
+    if (!run?.run_id || run.status !== "running") return;
+    const t = setInterval(async () => {
+      try {
+        const r = await fetch(`${API}/whatsapp/run-flow-test/${run.run_id}`);
+        const data = await r.json();
+        if (r.ok) setRun(data);
+      } catch {}
+    }, 2000);
+    return () => clearInterval(t);
+  }, [run?.run_id, run?.status, API]);
+
+  const start = async () => {
+    if (!to || to.replace(/\D/g, "").length < 6) { setError("Teléfono inválido (E.164 sin +)."); return; }
+    if (items.length === 0) { setError("Este flujo no tiene mensajes."); return; }
+    setStarting(true); setError(null);
+    try {
+      const r = await fetch(`${API}/whatsapp/run-flow-test`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project_id: projectId,
+          flow_key: flow.key,
+          to_phone: to,
+          speedup_seconds: Math.max(5, parseInt(speedup, 10) || 15),
+          items,
+        }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || "Error del servidor");
+      setRun({ run_id: data.run_id, total: data.total, done: 0, status: "running", results: [] });
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  const cancel = async () => {
+    if (!run?.run_id) return;
+    try {
+      await fetch(`${API}/whatsapp/run-flow-test/${run.run_id}/cancel`, { method: "POST" });
+      setRun(r => r ? { ...r, status: "cancelled" } : r);
+    } catch {}
+  };
+
+  const running = run?.status === "running";
+  const finished = run && ["completed", "cancelled"].includes(run.status);
+  const okCount = (run?.results || []).filter(x => x.ok).length;
+  const failCount = (run?.results || []).filter(x => !x.ok).length;
+
+  return (
+    <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={() => !running && onClose()}>
+      <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[85vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()} data-testid="flow-test-run-modal">
+        <div className="px-5 py-3 bg-gradient-to-r from-indigo-50 to-violet-50 border-b border-indigo-200 flex items-center justify-between">
+          <div>
+            <div className="text-sm font-bold text-indigo-900">🧪 Recorrer flujo completo en tu teléfono</div>
+            <div className="text-[11px] text-indigo-700">{flow.label} · {items.length} mensajes</div>
+          </div>
+          <button onClick={() => !running && onClose()} className="text-stone-500 hover:text-stone-900" disabled={running}>
+            <X size={16} />
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-5 space-y-3">
+          {!run && (
+            <>
+              <div className="text-[11.5px] bg-amber-50 border border-amber-200 text-amber-900 rounded p-2 leading-relaxed">
+                ⚠ Asegúrate antes de que TODAS las plantillas del flujo están <strong>APPROVED</strong> en Meta (Autopilot → Sincronizar plantillas). Cada envío consume 1 conversación Meta Business.
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[11px] font-semibold text-stone-700 uppercase tracking-widest">Teléfono destino</label>
+                  <input type="tel" value={to} onChange={e => setTo(e.target.value.replace(/\D/g, ""))}
+                    placeholder="34612345678 (E.164 sin +)"
+                    data-testid="flow-run-to-input"
+                    className="w-full mt-1 px-3 py-2 text-sm font-mono border border-stone-300 rounded-md focus:outline-none focus:border-stone-900" />
+                </div>
+                <div>
+                  <label className="text-[11px] font-semibold text-stone-700 uppercase tracking-widest">Delay entre mensajes (seg)</label>
+                  <input type="number" min="5" max="3600" value={speedup} onChange={e => setSpeedup(e.target.value)}
+                    data-testid="flow-run-delay-input"
+                    className="w-full mt-1 px-3 py-2 text-sm font-mono border border-stone-300 rounded-md focus:outline-none focus:border-stone-900" />
+                  <div className="text-[10.5px] text-stone-500 mt-1">Mín 5s. Con 15s: el flujo de 10 mensajes tarda ~2min 30s.</div>
+                </div>
+              </div>
+
+              <div className="bg-stone-50 border border-stone-200 rounded-md p-3">
+                <div className="text-[11px] font-semibold text-stone-700 uppercase tracking-widest mb-2">Preview del orden ({items.length} mensajes)</div>
+                <div className="space-y-1 max-h-[250px] overflow-y-auto">
+                  {items.map((it, i) => (
+                    <div key={it.msg_key} className="flex items-center gap-2 text-[11.5px]">
+                      <span className="text-stone-500 font-mono">{i + 1}.</span>
+                      <span className="font-mono text-indigo-800 truncate flex-1">{it.template_name}</span>
+                      {it.params.length > 0 && <span className="text-[10px] text-stone-500">{it.params.length} params</span>}
+                      {it.header_media_url && <span className="text-[10px]">🖼</span>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {error && <div className="text-[12px] text-red-800 bg-red-50 border border-red-200 rounded p-2">{error}</div>}
+            </>
+          )}
+
+          {run && (
+            <>
+              <div className="grid grid-cols-4 gap-2">
+                <div className="bg-stone-100 border border-stone-200 rounded p-2 text-center">
+                  <div className="text-[10px] uppercase tracking-widest text-stone-500">Progreso</div>
+                  <div className="text-xl font-bold text-stone-900" data-testid="flow-run-progress">{run.done} / {run.total}</div>
+                </div>
+                <div className="bg-emerald-50 border border-emerald-200 rounded p-2 text-center">
+                  <div className="text-[10px] uppercase tracking-widest text-emerald-700">OK</div>
+                  <div className="text-xl font-bold text-emerald-900">{okCount}</div>
+                </div>
+                <div className="bg-red-50 border border-red-200 rounded p-2 text-center">
+                  <div className="text-[10px] uppercase tracking-widest text-red-700">Error</div>
+                  <div className="text-xl font-bold text-red-900">{failCount}</div>
+                </div>
+                <div className={`border rounded p-2 text-center ${running ? "bg-indigo-50 border-indigo-200" : finished && run.status === "completed" ? "bg-emerald-50 border-emerald-200" : "bg-stone-100 border-stone-200"}`}>
+                  <div className="text-[10px] uppercase tracking-widest">Estado</div>
+                  <div className="text-sm font-bold">{running ? "🏃 En marcha" : run.status === "completed" ? "✓ Completado" : run.status === "cancelled" ? "⏸ Cancelado" : run.status}</div>
+                </div>
+              </div>
+
+              <div className="w-full bg-stone-100 rounded-full h-2 overflow-hidden">
+                <div className="h-full bg-indigo-600 transition-all" style={{ width: `${run.total > 0 ? (run.done / run.total * 100) : 0}%` }} />
+              </div>
+
+              <div className="space-y-1 max-h-[280px] overflow-y-auto">
+                {(run.results || []).map(r => (
+                  <div key={`${r.idx}-${r.msg_key}`}
+                    className={`flex items-start gap-2 p-2 rounded border text-[11.5px] ${r.ok ? "bg-emerald-50 border-emerald-200" : "bg-red-50 border-red-200"}`}>
+                    <div>{r.ok ? "✓" : "✗"}</div>
+                    <div className="flex-1 min-w-0">
+                      <div className="font-mono truncate">{r.template}</div>
+                      {r.ok
+                        ? <div className="text-[10px] text-emerald-700 truncate">ID: {r.message_id}</div>
+                        : <div className="text-[10px] text-red-700 break-words">{r.error}</div>}
+                    </div>
+                  </div>
+                ))}
+                {running && run.done < run.total && (
+                  <div className="text-[11px] text-stone-500 italic px-2 py-1">Esperando siguiente envío (cada {speedup}s)…</div>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+        <div className="px-5 py-3 bg-stone-50 border-t border-stone-200 flex items-center justify-between gap-2">
+          <div className="text-[10.5px] text-stone-500">
+            💡 Tiempo estimado: ~{Math.round((items.length - 1) * Math.max(5, parseInt(speedup, 10) || 15) / 60)} min
+          </div>
+          <div className="flex gap-2">
+            {!run && (
+              <>
+                <button onClick={onClose} className="px-3 py-1.5 text-sm text-stone-700 hover:text-stone-900">Cancelar</button>
+                <button onClick={start} disabled={starting || !to || items.length === 0}
+                  data-testid="flow-run-start-btn"
+                  className="inline-flex items-center gap-1.5 px-4 py-1.5 text-sm font-semibold bg-indigo-600 text-white rounded-md hover:bg-indigo-700 disabled:opacity-50">
+                  <Play size={12} /> {starting ? "Arrancando..." : `Enviar ${items.length} mensajes`}
+                </button>
+              </>
+            )}
+            {running && (
+              <button onClick={cancel} data-testid="flow-run-cancel-btn"
+                className="inline-flex items-center gap-1.5 px-4 py-1.5 text-sm font-semibold bg-red-600 text-white rounded-md hover:bg-red-700">
+                ⏸ Detener
+              </button>
+            )}
+            {finished && (
+              <button onClick={onClose} className="px-4 py-1.5 text-sm font-semibold bg-stone-900 text-white rounded-md hover:bg-stone-700">
+                Cerrar
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 
 function FlowView({
   flow, vars, showVars, onPreview, edits, onEditCopy, creatives,
@@ -1317,6 +1543,7 @@ function FlowView({
   me, projectId,
 }) {
   const canUseEvolution = flow.key === "broadcasts" || flow.key === "venta_comunidad";
+  const [showRunTest, setShowRunTest] = useState(false);
   const renderMsg = (m, i, pref) => {
     const mk = `${flow.key}:${m.id || i}`;
     return (
@@ -1352,10 +1579,19 @@ function FlowView({
         {canUseEvolution && <span className="ml-2 inline-block text-[10px] font-semibold bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded">🚀 Evolution API activa</span>}
         {!canUseEvolution && <span className="ml-2 inline-block text-[10px] font-semibold bg-sky-100 text-sky-800 px-1.5 py-0.5 rounded">📋 Plantilla Meta oficial</span>}
       </div>
-      <button onClick={() => onAddCustomMessage(flow)} data-testid={`flow-add-msg-${flow.key}`}
-        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-purple-600 text-white rounded-md hover:bg-purple-700">
-        <Plus size={12} /> Añadir mensaje
-      </button>
+      <div className="flex items-center gap-2">
+        {!canUseEvolution && (
+          <button onClick={() => setShowRunTest(true)} data-testid={`flow-run-test-${flow.key}`}
+            title="Enviar todos los mensajes del flujo a tu teléfono con delay configurable (modo QA)"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-indigo-600 text-white rounded-md hover:bg-indigo-700">
+            🧪 Recorrer flujo en mi teléfono
+          </button>
+        )}
+        <button onClick={() => onAddCustomMessage(flow)} data-testid={`flow-add-msg-${flow.key}`}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-purple-600 text-white rounded-md hover:bg-purple-700">
+          <Plus size={12} /> Añadir mensaje
+        </button>
+      </div>
     </div>
   );
   if (flow.branching) {
@@ -1372,10 +1608,23 @@ function FlowView({
             <div className="space-y-2 mt-3">{items.map((m, i) => renderMsg(m, i, bname))}</div>
           </div>
         ))}
+        {showRunTest && (
+          <FlowTestRunModal flow={flow} vars={vars} edits={edits} creatives={creatives}
+            templatesByMsg={templatesByMsg} projectId={projectId} onClose={() => setShowRunTest(false)} />
+        )}
       </div>
     );
   }
-  return <div className="space-y-2">{AddBar}{flow.items.map((m, i) => renderMsg(m, i, flow.key))}</div>;
+  return (
+    <div className="space-y-2">
+      {AddBar}
+      {flow.items.map((m, i) => renderMsg(m, i, flow.key))}
+      {showRunTest && (
+        <FlowTestRunModal flow={flow} vars={vars} edits={edits} creatives={creatives}
+          templatesByMsg={templatesByMsg} projectId={projectId} onClose={() => setShowRunTest(false)} />
+      )}
+    </div>
+  );
 }
 
 

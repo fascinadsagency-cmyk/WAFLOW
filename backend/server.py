@@ -1548,6 +1548,180 @@ async def meta_templates_refresh_status(project_id: str):
 
 
 # ============================================================
+# FLOW TEST RUNS — secuencia completa de mensajes en modo QA
+# Envía N plantillas Meta aprobadas al teléfono de pruebas con delay configurable.
+# Corre en background; el frontend polea el progreso via GET run-flow-test/{run_id}.
+# ============================================================
+import asyncio as _asyncio
+
+
+class FlowTestRunItem(BaseModel):
+    msg_key: str
+    template_name: str
+    language: str = "es"
+    params: List[str] = []
+    header_media_url: Optional[str] = None
+    header_media_type: Optional[str] = None
+
+
+class FlowTestRunBody(BaseModel):
+    project_id: str
+    flow_key: str
+    to_phone: str
+    speedup_seconds: int = 15
+    items: List[FlowTestRunItem]
+
+
+async def _flow_test_run_task(run_id: str):
+    """Background: itera los mensajes y los envía a Meta con sleep entre ellos."""
+    rec = await db.flow_test_runs.find_one({"run_id": run_id})
+    if not rec:
+        return
+    phone_id = rec["phone_number_id"]
+    access_token = rec["access_token"]
+    speedup = max(1, int(rec.get("speedup_seconds", 15)))
+    items = rec.get("items", [])
+    to = rec["to_phone"]
+
+    async with httpx.AsyncClient(timeout=20.0) as hc:
+        for idx, it in enumerate(items):
+            # Check if cancelled
+            current = await db.flow_test_runs.find_one({"run_id": run_id}, {"status": 1, "_id": 0})
+            if current and current.get("status") == "cancelled":
+                await db.flow_test_runs.update_one(
+                    {"run_id": run_id},
+                    {"$set": {"finished_at": datetime.now(timezone.utc).isoformat()}},
+                )
+                return
+
+            components: List[Dict[str, Any]] = []
+            if it.get("header_media_url") and it.get("header_media_type"):
+                mt = (it["header_media_type"] or "").lower()
+                if mt in {"image", "video", "document"}:
+                    components.append({
+                        "type": "header",
+                        "parameters": [{"type": mt, mt: {"link": it["header_media_url"]}}],
+                    })
+            if it.get("params"):
+                components.append({
+                    "type": "body",
+                    "parameters": [{"type": "text", "text": str(p)[:1024]} for p in it["params"]],
+                })
+            payload = {
+                "messaging_product": "whatsapp",
+                "to": to,
+                "type": "template",
+                "template": {
+                    "name": it["template_name"],
+                    "language": {"code": it.get("language") or "es"},
+                    **({"components": components} if components else {}),
+                },
+            }
+            item_result: Dict[str, Any]
+            try:
+                r = await hc.post(
+                    f"https://graph.facebook.com/v21.0/{phone_id}/messages",
+                    json=payload,
+                    headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+                )
+                data = r.json() if r.content else {}
+                if r.status_code < 400:
+                    item_result = {
+                        "idx": idx, "msg_key": it["msg_key"], "template": it["template_name"],
+                        "ok": True, "message_id": (data.get("messages") or [{}])[0].get("id"),
+                        "at": datetime.now(timezone.utc).isoformat(),
+                    }
+                else:
+                    err_msg = (data.get("error") or {}).get("message") or str(data)[:200]
+                    item_result = {
+                        "idx": idx, "msg_key": it["msg_key"], "template": it["template_name"],
+                        "ok": False, "error": err_msg,
+                        "at": datetime.now(timezone.utc).isoformat(),
+                    }
+            except Exception as e:
+                item_result = {
+                    "idx": idx, "msg_key": it["msg_key"], "template": it["template_name"],
+                    "ok": False, "error": f"Red: {str(e)[:200]}",
+                    "at": datetime.now(timezone.utc).isoformat(),
+                }
+
+            await db.flow_test_runs.update_one(
+                {"run_id": run_id},
+                {
+                    "$push": {"results": item_result},
+                    "$set": {"done": idx + 1, "last_update": datetime.now(timezone.utc).isoformat()},
+                },
+            )
+
+            # Sleep entre mensajes (no después del último)
+            if idx < len(items) - 1:
+                await _asyncio.sleep(speedup)
+
+    await db.flow_test_runs.update_one(
+        {"run_id": run_id},
+        {"$set": {"status": "completed", "finished_at": datetime.now(timezone.utc).isoformat()}},
+    )
+
+
+@api_router.post("/whatsapp/run-flow-test")
+async def start_flow_test_run(body: FlowTestRunBody):
+    """Arranca un run de prueba: envía secuencialmente las plantillas al teléfono con delay."""
+    connections = await _read_storage(f"wa_editor:p:{body.project_id}:connections") or {}
+    phone_id = connections.get("phoneNumberId")
+    access_token = connections.get("accessToken")
+    if not phone_id or not access_token:
+        raise HTTPException(status_code=400, detail="Faltan Phone Number ID y/o Access Token en Conexiones.")
+    to = _re.sub(r"\D", "", body.to_phone or "")
+    if not to:
+        raise HTTPException(status_code=400, detail="Teléfono destino inválido (E.164 sin +).")
+    if not body.items:
+        raise HTTPException(status_code=400, detail="No hay mensajes para enviar.")
+
+    run_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    await db.flow_test_runs.insert_one({
+        "run_id": run_id,
+        "project_id": body.project_id,
+        "flow_key": body.flow_key,
+        "to_phone": to,
+        "phone_number_id": phone_id,
+        "access_token": access_token,
+        "speedup_seconds": body.speedup_seconds,
+        "items": [it.dict() for it in body.items],
+        "total": len(body.items),
+        "done": 0,
+        "results": [],
+        "status": "running",
+        "started_at": now,
+        "last_update": now,
+    })
+    _asyncio.create_task(_flow_test_run_task(run_id))
+    return {"ok": True, "run_id": run_id, "total": len(body.items)}
+
+
+@api_router.get("/whatsapp/run-flow-test/{run_id}")
+async def get_flow_test_run(run_id: str):
+    rec = await db.flow_test_runs.find_one(
+        {"run_id": run_id},
+        {"_id": 0, "access_token": 0, "phone_number_id": 0, "items": 0},
+    )
+    if not rec:
+        raise HTTPException(status_code=404, detail="Run no encontrado")
+    return rec
+
+
+@api_router.post("/whatsapp/run-flow-test/{run_id}/cancel")
+async def cancel_flow_test_run(run_id: str):
+    r = await db.flow_test_runs.update_one(
+        {"run_id": run_id, "status": "running"},
+        {"$set": {"status": "cancelled"}},
+    )
+    if r.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Run no encontrado o ya terminado")
+    return {"ok": True}
+
+
+# ============================================================
 # ROOT
 # ============================================================
 @api_router.get("/")

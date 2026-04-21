@@ -117,7 +117,21 @@ Editor colaborativo multi-proyecto de secuencias de mensajes de WhatsApp para ag
 - **ConnectionsPanel**: nuevo campo "Webhook deploy (🚀 Lanzar ahora)" (`n8nDeployWebhookUrl`)
 - **createSnapshot** ahora devuelve el ID del snapshot creado (necesario para pasarlo al wizard)
 
-### Iter 12 (21 feb 2026) — Envío real de plantillas Meta con parámetros
+### Iter 13 (21 feb 2026) — Recorrer flujo completo en teléfono QA
+- **Backend — 3 endpoints nuevos** (tras Meta Templates Sync):
+  - `POST /api/whatsapp/run-flow-test` — recibe `{project_id, flow_key, to_phone, speedup_seconds, items[]}`. Valida credenciales Meta del proyecto, crea doc en `db.flow_test_runs` con `status:"running"`, arranca `_flow_test_run_task` via `asyncio.create_task()`, devuelve `{run_id, total}` inmediatamente. Cada item contiene `{msg_key, template_name, language, params[], header_media_url, header_media_type}`.
+  - `GET /api/whatsapp/run-flow-test/{run_id}` — polling público (proyección excluye access_token/phone_number_id/items) devuelve estado con `done/total/status/results[]`.
+  - `POST /api/whatsapp/run-flow-test/{run_id}/cancel` — marca `status:"cancelled"`, el task lo detecta en la siguiente iteración antes de enviar.
+- **Background task `_flow_test_run_task`**: itera items, para cada uno construye payload Meta (header media + body params), `POST /{phone_id}/messages`, `$push` al array `results[]` con `{idx, msg_key, template, ok, message_id|error, at}`, `asyncio.sleep(speedup_seconds)` entre mensajes (no después del último). Al terminar marca `status:"completed"` y `finished_at`. Check de cancelación cada iteración.
+- **Frontend — `FlowTestRunModal`** (200+ líneas, insertado antes de `FlowView`):
+  - Auto-construye los `items[]` del flujo seleccionado: detecta variables del copy efectivo (`edits[mk] ?? m.copy`), mapea a params ordenados con valores actuales de `vars`, usa `templatesByMsg[mk].name` o genera auto-name `waflow_{flowKey}_{msgId}`, incluye primera imagen con URL pública como header.
+  - Fase 1 (pre-start): preview del orden (N mensajes), inputs teléfono E.164 y delay (min 5s), warning sobre conversaciones Meta Business.
+  - Fase 2 (running): stats grid (progreso/OK/error/estado), progress bar, lista de results live con `useEffect` poll cada 2s al GET status endpoint hasta que status != "running". Botón "⏸ Detener" dispara cancel. Backdrop no cierra el modal mientras corre para evitar cierres accidentales.
+  - Fase 3 (finished): resultado final + botón Cerrar.
+- **Frontend — botón "🧪 Recorrer flujo en mi teléfono"** (data-testid=`flow-run-test-{flowKey}`) en AddBar de cada FlowView Meta (no broadcasts/comunidad). Solo visible cuando `!canUseEvolution`.
+- **Testing iter-13**: compila limpio (ESLint OK), 35/35 regresión OK. Probado end-to-end vía curl: fake creds → start run → t+2s `done:1/2 status:running` con result-0 error Meta 401 → t+10s `done:2/2 status:completed` con 2 results registrados. Polling + delay + final state funcionan. **Pendiente validación en vivo con credenciales Meta reales del usuario**.
+
+
 - **Backend — 1 endpoint nuevo**: `POST /api/whatsapp/send-template` recibe `{project_id, template_name, language, to_phone, params[], header_media_url, header_media_type}`. Lee `phoneNumberId` + `accessToken` de las conexiones del proyecto. Construye el payload Meta con estructura `template.components[header|body].parameters` y dispara `POST /{phone_id}/messages`. Devuelve `{ok, message_id}` o `{ok:false, error}` con el mensaje de Meta sin crashear.
 - **Frontend — `MetaTemplateSendModal`** (nuevo componente, ~125 líneas, insertado antes de `EvolutionSendModal`):
   - Auto-detecta las variables `{NOMBRE}`, `{TITULO_WEBINAR}`... del copy efectivo (editado o original).
