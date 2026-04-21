@@ -226,58 +226,72 @@ class TestConnectionBody(BaseModel):
 
 @api_router.post("/test-connection")
 async def test_connection(body: TestConnectionBody):
+    handlers = {
+        "meta": _test_meta_connection,
+        "evolution": _test_evolution_connection,
+        "n8n_webhook": _test_n8n_connection,
+    }
+    handler = handlers.get(body.type)
+    if not handler:
+        return {"ok": False, "error": f"Tipo desconocido: {body.type}"}
     try:
         async with httpx.AsyncClient(timeout=12.0) as hc:
-            if body.type == "meta":
-                # GET https://graph.facebook.com/v21.0/{phone_number_id}?fields=verified_name,display_phone_number
-                phone_id = body.config.get("phone_number_id") or body.config.get("phoneNumberId")
-                token = body.config.get("access_token") or body.config.get("accessToken")
-                if not phone_id or not token:
-                    return {"ok": False, "error": "Faltan phone_number_id o access_token"}
-                r = await hc.get(
-                    f"https://graph.facebook.com/v21.0/{phone_id}",
-                    params={"fields": "verified_name,display_phone_number,quality_rating"},
-                    headers={"Authorization": f"Bearer {token}"},
-                )
-                data = r.json() if r.content else {}
-                if r.status_code < 400:
-                    return {"ok": True, "detail": f"Número verificado: {data.get('display_phone_number', '—')} · {data.get('verified_name', '—')} · calidad {data.get('quality_rating', '—')}"}
-                return {"ok": False, "error": f"Meta API: {data.get('error', {}).get('message', r.text[:200])}"}
-
-            elif body.type == "evolution":
-                # GET {server}/instance/connectionState/{instance}
-                server = (body.config.get("server_url") or "").rstrip("/")
-                apikey = body.config.get("api_key")
-                instance = body.config.get("instance")
-                if not all([server, apikey, instance]):
-                    return {"ok": False, "error": "Faltan server_url, api_key o instance"}
-                r = await hc.get(
-                    f"{server}/instance/connectionState/{instance}",
-                    headers={"apikey": apikey},
-                )
-                data = r.json() if r.content else {}
-                if r.status_code < 400:
-                    state = (data.get("instance") or {}).get("state") or data.get("state", "unknown")
-                    return {"ok": state == "open", "detail": f"Instancia '{instance}' · estado: {state}"}
-                return {"ok": False, "error": f"Evolution: HTTP {r.status_code} — {str(data)[:200]}"}
-
-            elif body.type == "n8n_webhook":
-                url = body.config.get("url")
-                if not url:
-                    return {"ok": False, "error": "Falta URL del webhook"}
-                r = await hc.post(
-                    url,
-                    json={"_waflow_test": True, "ts": datetime.now(timezone.utc).isoformat()},
-                    headers={"X-WAFLOW-Test": "1"},
-                )
-                return {"ok": r.status_code < 400, "detail": f"HTTP {r.status_code} — webhook responde"}
-
-            else:
-                return {"ok": False, "error": f"Tipo desconocido: {body.type}"}
+            return await handler(hc, body.config or {})
     except httpx.TimeoutException:
         return {"ok": False, "error": "Timeout. ¿El servidor está online?"}
     except Exception as e:
         return {"ok": False, "error": str(e)[:200]}
+
+
+async def _test_meta_connection(hc: httpx.AsyncClient, config: Dict[str, Any]) -> Dict[str, Any]:
+    phone_id = config.get("phone_number_id") or config.get("phoneNumberId")
+    token = config.get("access_token") or config.get("accessToken")
+    if not phone_id or not token:
+        return {"ok": False, "error": "Faltan phone_number_id o access_token"}
+    r = await hc.get(
+        f"https://graph.facebook.com/v21.0/{phone_id}",
+        params={"fields": "verified_name,display_phone_number,quality_rating"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    data = r.json() if r.content else {}
+    if r.status_code < 400:
+        return {
+            "ok": True,
+            "detail": (
+                f"Número verificado: {data.get('display_phone_number', '—')} · "
+                f"{data.get('verified_name', '—')} · calidad {data.get('quality_rating', '—')}"
+            ),
+        }
+    return {"ok": False, "error": f"Meta API: {data.get('error', {}).get('message', r.text[:200])}"}
+
+
+async def _test_evolution_connection(hc: httpx.AsyncClient, config: Dict[str, Any]) -> Dict[str, Any]:
+    server = (config.get("server_url") or "").rstrip("/")
+    apikey = config.get("api_key")
+    instance = config.get("instance")
+    if not all([server, apikey, instance]):
+        return {"ok": False, "error": "Faltan server_url, api_key o instance"}
+    r = await hc.get(
+        f"{server}/instance/connectionState/{instance}",
+        headers={"apikey": apikey},
+    )
+    data = r.json() if r.content else {}
+    if r.status_code < 400:
+        state = (data.get("instance") or {}).get("state") or data.get("state", "unknown")
+        return {"ok": state == "open", "detail": f"Instancia '{instance}' · estado: {state}"}
+    return {"ok": False, "error": f"Evolution: HTTP {r.status_code} — {str(data)[:200]}"}
+
+
+async def _test_n8n_connection(hc: httpx.AsyncClient, config: Dict[str, Any]) -> Dict[str, Any]:
+    url = config.get("url")
+    if not url:
+        return {"ok": False, "error": "Falta URL del webhook"}
+    r = await hc.post(
+        url,
+        json={"_waflow_test": True, "ts": datetime.now(timezone.utc).isoformat()},
+        headers={"X-WAFLOW-Test": "1"},
+    )
+    return {"ok": r.status_code < 400, "detail": f"HTTP {r.status_code} — webhook responde"}
 
 
 # ============================================================
@@ -559,10 +573,8 @@ async def review_notify(token: str, body: NotifyBody):
 async def review_summary_pdf(token: str):
     from fastapi.responses import Response
     from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import cm
-    from reportlab.lib import colors
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+    from reportlab.platypus import SimpleDocTemplate
     from io import BytesIO
 
     rec = await db.review_tokens.find_one({"token": token}, {"_id": 0})
@@ -579,110 +591,14 @@ async def review_summary_pdf(token: str):
     edits = await _read_storage(f"wa_editor:p:{pid}:edits") or {}
     approval = await _read_storage(f"wa_editor:p:{pid}:approval") or {}
 
-    # Construir contenido del PDF
     buf = BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=2*cm, bottomMargin=2*cm, leftMargin=2*cm, rightMargin=2*cm)
-    styles = getSampleStyleSheet()
-    title_style = ParagraphStyle("title", parent=styles["Heading1"], textColor=colors.HexColor("#4F46E5"), spaceAfter=6)
-    meta_style = ParagraphStyle("meta", parent=styles["Normal"], textColor=colors.HexColor("#6B7280"), fontSize=9)
-    h2_style = ParagraphStyle("h2", parent=styles["Heading2"], textColor=colors.HexColor("#111827"), spaceBefore=12, spaceAfter=6)
-    msg_id_style = ParagraphStyle("msgid", parent=styles["Normal"], fontName="Courier-Bold", fontSize=9, textColor=colors.HexColor("#111827"))
-    body_style = ParagraphStyle("body", parent=styles["Normal"], fontSize=10, leading=14, textColor=colors.HexColor("#1F2937"))
-    note_style = ParagraphStyle("note", parent=styles["Italic"], fontSize=9, textColor=colors.HexColor("#92400E"), leftIndent=10)
-
+    styles = _pdf_styles()
     story = []
-    story.append(Paragraph(f"WAFLOW · Resumen de revisión", title_style))
-    story.append(Paragraph(f"<b>Proyecto:</b> {project.get('name','?')} · <b>Cliente:</b> {project.get('client') or '—'}", meta_style))
-    story.append(Paragraph(f"Generado: {datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M UTC')}", meta_style))
-    story.append(Spacer(1, 0.4*cm))
-
-    total = len(approval)
-    approved = sum(1 for v in approval.values() if (v or {}).get("status") == "approved")
-    changes = sum(1 for v in approval.values() if (v or {}).get("status") == "changes")
-
-    stats_data = [
-        ["Estado", "Cantidad"],
-        ["✓ Aprobados", str(approved)],
-        ["✎ Con cambios", str(changes)],
-        ["Total revisados", str(total)],
-    ]
-    t = Table(stats_data, colWidths=[6*cm, 3*cm])
-    t.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#4F46E5")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#F9FAFB")),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#E5E7EB")),
-        ("FONTSIZE", (0, 0), (-1, -1), 10),
-        ("PADDING", (0, 0), (-1, -1), 6),
-    ]))
-    story.append(t)
-    story.append(Spacer(1, 0.5*cm))
-    story.append(Paragraph("Detalle por mensaje", h2_style))
-
-    def render_vars(text: str) -> str:
-        if not text:
-            return ""
-        out = text
-        for v in vars_list:
-            name = v.get("name")
-            if not name:
-                continue
-            out = out.replace("{" + name + "}", str(v.get("value") or f"{{{name}}}"))
-        return out
-
-    # Mostrar solo mensajes con aprobación registrada (lo revisado)
-    # Ordenados por msgKey
-    for msg_key in sorted(approval.keys()):
-        a = approval[msg_key] or {}
-        status = a.get("status")
-        status_label = "✓ APROBADO" if status == "approved" else ("✎ CAMBIOS" if status == "changes" else "—")
-        color = colors.HexColor("#059669") if status == "approved" else (colors.HexColor("#B45309") if status == "changes" else colors.HexColor("#6B7280"))
-
-        story.append(Paragraph(f"<font name='Courier-Bold' color='#111827'>{msg_key}</font> · <font color='{color.hexval()[2:]}'><b>{status_label}</b></font>", body_style))
-        story.append(Paragraph(f"<font color='#6B7280' size='9'>Revisado por: {a.get('by','—')}</font>", meta_style))
-
-        edited_copy = edits.get(msg_key)
-        if edited_copy:
-            rendered = render_vars(edited_copy).replace("\n", "<br/>")
-            story.append(Spacer(1, 0.1*cm))
-            story.append(Paragraph(rendered, body_style))
-        if a.get("comment"):
-            story.append(Spacer(1, 0.1*cm))
-            story.append(Paragraph(f"<b>Nota del cliente:</b> {a['comment']}", note_style))
-        story.append(Spacer(1, 0.3*cm))
-
-    if total == 0:
-        story.append(Paragraph("Sin mensajes revisados todavía.", meta_style))
-
-    # Sección de firma si el link está firmado
-    if rec.get("locked"):
-        story.append(Spacer(1, 0.8*cm))
-        story.append(Paragraph("Firma digital de aprobación", h2_style))
-        sig_data = [
-            ["Firmado por", rec.get("signer_name", "—")],
-            ["Rol", rec.get("signer_role") or "—"],
-            ["Fecha y hora (UTC)", rec.get("signed_at", "—")],
-            ["Hash SHA-256", rec.get("signature_hash", "—")],
-            ["Estado", "🔐 Revisión cerrada y firmada"],
-        ]
-        tsig = Table(sig_data, colWidths=[4.5*cm, 12*cm])
-        tsig.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#F3F4F6")),
-            ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, -1), 8.5),
-            ("TEXTCOLOR", (0, 0), (-1, -1), colors.HexColor("#111827")),
-            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#E5E7EB")),
-            ("PADDING", (0, 0), (-1, -1), 5),
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ]))
-        story.append(tsig)
-        story.append(Spacer(1, 0.2*cm))
-        story.append(Paragraph(
-            "<font color='#6B7280' size='8'>Este hash certifica la integridad del contenido aprobado en el momento de la firma. "
-            "Cualquier modificación posterior al contenido invalidaría la firma.</font>",
-            meta_style,
-        ))
+    story.extend(_pdf_header(project, styles))
+    story.extend(_pdf_stats_table(approval, styles))
+    story.extend(_pdf_messages_section(approval, edits, vars_list, styles))
+    story.extend(_pdf_signature_section(rec, styles))
 
     doc.build(story)
     pdf_bytes = buf.getvalue()
@@ -694,6 +610,132 @@ async def review_summary_pdf(token: str):
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+def _pdf_styles():
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib import colors
+    base = getSampleStyleSheet()
+    return {
+        "base": base,
+        "title": ParagraphStyle("title", parent=base["Heading1"], textColor=colors.HexColor("#4F46E5"), spaceAfter=6),
+        "meta": ParagraphStyle("meta", parent=base["Normal"], textColor=colors.HexColor("#6B7280"), fontSize=9),
+        "h2": ParagraphStyle("h2", parent=base["Heading2"], textColor=colors.HexColor("#111827"), spaceBefore=12, spaceAfter=6),
+        "body": ParagraphStyle("body", parent=base["Normal"], fontSize=10, leading=14, textColor=colors.HexColor("#1F2937")),
+        "note": ParagraphStyle("note", parent=base["Italic"], fontSize=9, textColor=colors.HexColor("#92400E"), leftIndent=10),
+    }
+
+
+def _pdf_header(project, styles):
+    from reportlab.lib.units import cm
+    from reportlab.platypus import Paragraph, Spacer
+    return [
+        Paragraph("WAFLOW · Resumen de revisión", styles["title"]),
+        Paragraph(f"<b>Proyecto:</b> {project.get('name','?')} · <b>Cliente:</b> {project.get('client') or '—'}", styles["meta"]),
+        Paragraph(f"Generado: {datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M UTC')}", styles["meta"]),
+        Spacer(1, 0.4*cm),
+    ]
+
+
+def _pdf_stats_table(approval, styles):
+    from reportlab.lib.units import cm
+    from reportlab.lib import colors
+    from reportlab.platypus import Table, TableStyle, Spacer, Paragraph
+    total = len(approval)
+    approved = sum(1 for v in approval.values() if (v or {}).get("status") == "approved")
+    changes = sum(1 for v in approval.values() if (v or {}).get("status") == "changes")
+    t = Table(
+        [["Estado", "Cantidad"], ["✓ Aprobados", str(approved)], ["✎ Con cambios", str(changes)], ["Total revisados", str(total)]],
+        colWidths=[6*cm, 3*cm],
+    )
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#4F46E5")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#F9FAFB")),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#E5E7EB")),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("PADDING", (0, 0), (-1, -1), 6),
+    ]))
+    return [t, Spacer(1, 0.5*cm), Paragraph("Detalle por mensaje", styles["h2"])]
+
+
+def _pdf_messages_section(approval, edits, vars_list, styles):
+    from reportlab.lib.units import cm
+    from reportlab.lib import colors
+    from reportlab.platypus import Paragraph, Spacer
+
+    def render_vars(text):
+        if not text:
+            return ""
+        out = text
+        for v in vars_list:
+            name = v.get("name")
+            if not name:
+                continue
+            out = out.replace("{" + name + "}", str(v.get("value") or f"{{{name}}}"))
+        return out
+
+    story = []
+    if not approval:
+        story.append(Paragraph("Sin mensajes revisados todavía.", styles["meta"]))
+        return story
+
+    for msg_key in sorted(approval.keys()):
+        a = approval[msg_key] or {}
+        status = a.get("status")
+        status_label = "✓ APROBADO" if status == "approved" else ("✎ CAMBIOS" if status == "changes" else "—")
+        color = colors.HexColor("#059669") if status == "approved" else (colors.HexColor("#B45309") if status == "changes" else colors.HexColor("#6B7280"))
+        story.append(Paragraph(
+            f"<font name='Courier-Bold' color='#111827'>{msg_key}</font> · <font color='{color.hexval()[2:]}'><b>{status_label}</b></font>",
+            styles["body"],
+        ))
+        story.append(Paragraph(f"<font color='#6B7280' size='9'>Revisado por: {a.get('by','—')}</font>", styles["meta"]))
+        edited_copy = edits.get(msg_key)
+        if edited_copy:
+            story.append(Spacer(1, 0.1*cm))
+            story.append(Paragraph(render_vars(edited_copy).replace("\n", "<br/>"), styles["body"]))
+        if a.get("comment"):
+            story.append(Spacer(1, 0.1*cm))
+            story.append(Paragraph(f"<b>Nota del cliente:</b> {a['comment']}", styles["note"]))
+        story.append(Spacer(1, 0.3*cm))
+    return story
+
+
+def _pdf_signature_section(rec, styles):
+    from reportlab.lib.units import cm
+    from reportlab.lib import colors
+    from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
+    if not rec.get("locked"):
+        return []
+    sig_data = [
+        ["Firmado por", rec.get("signer_name", "—")],
+        ["Rol", rec.get("signer_role") or "—"],
+        ["Fecha y hora (UTC)", rec.get("signed_at", "—")],
+        ["Hash SHA-256", rec.get("signature_hash", "—")],
+        ["Estado", "🔐 Revisión cerrada y firmada"],
+    ]
+    tsig = Table(sig_data, colWidths=[4.5*cm, 12*cm])
+    tsig.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#F3F4F6")),
+        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+        ("TEXTCOLOR", (0, 0), (-1, -1), colors.HexColor("#111827")),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#E5E7EB")),
+        ("PADDING", (0, 0), (-1, -1), 5),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+    ]))
+    return [
+        Spacer(1, 0.8*cm),
+        Paragraph("Firma digital de aprobación", styles["h2"]),
+        tsig,
+        Spacer(1, 0.2*cm),
+        Paragraph(
+            "<font color='#6B7280' size='8'>Este hash certifica la integridad del contenido aprobado en el momento de la firma. "
+            "Cualquier modificación posterior al contenido invalidaría la firma.</font>",
+            styles["meta"],
+        ),
+    ]
 
 
 # ============================================================

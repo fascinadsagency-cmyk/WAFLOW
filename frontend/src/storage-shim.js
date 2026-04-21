@@ -70,7 +70,7 @@ const storage = {
       try {
         localStorage.removeItem(LOCAL_PREFIX + key);
       } catch (e) {
-        /* ignore */
+        console.warn("localStorage delete failed", e);
       }
       return;
     }

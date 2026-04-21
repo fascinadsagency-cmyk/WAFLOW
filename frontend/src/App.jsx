@@ -9,6 +9,9 @@ import {
   Share2, ExternalLink, ClipboardCheck, GitCommit, TrendingUp, Zap
 } from "lucide-react";
 
+import { ConfirmProvider, useConfirm } from "./hooks/useConfirm";
+import PublicReviewPage from "./pages/PublicReviewPage";
+
 // === DATOS DEL EXCEL (importados desde data.js) ===
 import { RAW_DATA as RAW } from "./data.js";
 
@@ -384,7 +387,7 @@ function WhatsAppPreview({ msg, vars, onClose, variant = null }) {
           {buttons.length > 0 && (
             <div className="mt-1 space-y-0.5 max-w-[85%]">
               {buttons.map((b, i) => (
-                <div key={i} className="bg-white rounded-lg px-3 py-2.5 text-center text-[13px] font-medium text-[#00A5F4] shadow-sm cursor-pointer hover:bg-stone-50">{b}</div>
+                <div key={`btn-${i}-${b}`} className="bg-white rounded-lg px-3 py-2.5 text-center text-[13px] font-medium text-[#00A5F4] shadow-sm cursor-pointer hover:bg-stone-50">{b}</div>
               ))}
             </div>
           )}
@@ -937,7 +940,7 @@ function MessageCard({
                 Variante A = copy principal arriba. Añade B, C... cada una con su % de tráfico.
               </div>
               {(variants?.items || []).map((vr, i) => (
-                <div key={i} className="bg-white border border-indigo-200 rounded-md p-2 mb-2">
+                <div key={`var-${i}`} className="bg-white border border-indigo-200 rounded-md p-2 mb-2">
                   <div className="flex items-center gap-2 mb-1">
                     <span className="text-[10px] font-mono font-semibold">Variante {String.fromCharCode(66 + i)}</span>
                     <input type="text" value={vr.label || ""} onChange={e => {
@@ -1607,7 +1610,7 @@ function MindMapSVG({ nodes, edges, onFlowClick, viewBox }) {
             if (!a || !b) return null;
             const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
             return (
-              <g key={i}>
+              <g key={`edge-${e.from}-${e.to}-${i}`}>
                 <line x1={a.x + 60} y1={a.y} x2={b.x - 60} y2={b.y} stroke="#94a3b8" strokeWidth="1.5" markerEnd="url(#arrow)" />
                 {e.label && (<g><rect x={mx - 28} y={my - 9} width="56" height="18" rx="4" fill="white" stroke="#e2e8f0" /><text x={mx} y={my + 3} textAnchor="middle" fontSize="10" fill="#475569" fontWeight="500">{e.label}</text></g>)}
               </g>
@@ -1624,7 +1627,7 @@ function MindMapSVG({ nodes, edges, onFlowClick, viewBox }) {
                 {shape === "diamond" && <polygon points={`${n.x},${n.y - 35} ${n.x + 65},${n.y} ${n.x},${n.y + 35} ${n.x - 65},${n.y}`} fill={n.color} stroke={isSel ? "#0f172a" : "none"} strokeWidth="2" />}
                 {shape === "circle" && <circle cx={n.x} cy={n.y} r="40" fill={n.color} stroke={isSel ? "#0f172a" : "none"} strokeWidth="2" />}
                 {n.label.split("\n").map((line, i, arr) => (
-                  <text key={i} x={n.x} y={n.y - ((arr.length - 1) * 6) + (i * 13)} textAnchor="middle" fontSize="11" fill="white" fontWeight={i === 0 ? "600" : "400"}>{line}</text>
+                  <text key={`line-${n.id}-${i}`} x={n.x} y={n.y - ((arr.length - 1) * 6) + (i * 13)} textAnchor="middle" fontSize="11" fill="white" fontWeight={i === 0 ? "600" : "400"}>{line}</text>
                 ))}
                 {clickable && <text x={n.x + 48} y={n.y - 22} fontSize="12" fill="white" opacity="0.7">↗</text>}
               </g>
@@ -2058,7 +2061,7 @@ function LaunchWizard({ project, connections, workflowJson, snapshotId, onDeploy
             <div className="text-[11px] font-semibold tracking-widest text-stone-500 uppercase mb-2">Plan de lanzamiento</div>
             <div className="space-y-1.5">
               {steps.map((s, i) => (
-                <div key={i} className={`flex items-center gap-3 p-2.5 rounded border ${
+                <div key={`lwstep-${s.label}-${i}`} className={`flex items-center gap-3 p-2.5 rounded border ${
                   s.done ? "bg-emerald-50 border-emerald-200"
                   : step === 1 && i === 1 ? "bg-indigo-50 border-indigo-300 animate-pulse"
                   : "bg-stone-50 border-stone-200"
@@ -2689,7 +2692,7 @@ function AIPromptPanel({ aiPrompt, setAIPrompt, vars }) {
               </div>
             )}
             {messages.map((m, i) => (
-              <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+              <div key={`chatmsg-${i}-${m.role}`} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
                 <div className={`max-w-[75%] rounded-lg px-3 py-2 text-[13px] whitespace-pre-wrap ${
                   m.role === "user" ? "bg-emerald-600 text-white" : "bg-white border border-stone-200 text-stone-800"
                 }`}>{m.text}</div>
@@ -3313,8 +3316,8 @@ function CaptacionPanel({ config, setConfig, projectName, n8nWebhookUrl }) {
                   ] : []),
                 ].map((step, i) => (
                   step.label === "→"
-                    ? <span key={i} className="text-stone-400 self-center">→</span>
-                    : <span key={i} className="px-2 py-1 rounded-md text-white text-[10px] font-medium" style={{ backgroundColor: step.color }}>{step.label}</span>
+                    ? <span key={`arrow-${i}`} className="text-stone-400 self-center">→</span>
+                    : <span key={`step-${step.label}-${i}`} className="px-2 py-1 rounded-md text-white text-[10px] font-medium" style={{ backgroundColor: step.color }}>{step.label}</span>
                 ))}
               </div>
               {config.formHasPhone === false && (
@@ -3338,7 +3341,7 @@ function CaptacionPanel({ config, setConfig, projectName, n8nWebhookUrl }) {
             { wf: generatedWorkflows.registration_workflow, filename: `n8n_captacion_${config.platform}.json`, icon: "📥", label: "Workflow 1: Captación de registro" },
             { wf: generatedWorkflows.wa_receiver_workflow, filename: `n8n_receptor_whatsapp.json`, icon: "📲", label: "Workflow 2: Receptor WhatsApp" },
           ].map((item, idx) => (
-            <div key={idx} className="bg-white border border-stone-200 rounded-lg overflow-hidden">
+            <div key={item.filename} className="bg-white border border-stone-200 rounded-lg overflow-hidden">
               <div className="px-5 py-4 border-b border-stone-200 flex items-center justify-between">
                 <div>
                   <div className="font-semibold text-stone-900">{item.icon} {item.label}</div>
@@ -3354,7 +3357,7 @@ function CaptacionPanel({ config, setConfig, projectName, n8nWebhookUrl }) {
                   <div className="text-[11px] font-semibold text-stone-700 uppercase tracking-widest mb-2">Pasos para implementar</div>
                   <ol className="space-y-1.5">
                     {item.wf.explanation.setup_steps.map((step, i) => (
-                      <li key={i} className="text-[12px] text-stone-700 flex items-start gap-2">
+                      <li key={`setup-${item.filename}-${i}`} className="text-[12px] text-stone-700 flex items-start gap-2">
                         <span className="font-mono text-[10px] bg-stone-100 px-1.5 py-0.5 rounded shrink-0">{i + 1}</span>
                         {step.replace(/^\d+\.\s/, "")}
                       </li>
@@ -3365,7 +3368,7 @@ function CaptacionPanel({ config, setConfig, projectName, n8nWebhookUrl }) {
                   <div className="text-[11px] font-semibold text-stone-700 uppercase tracking-widest mb-2">Nodos del workflow</div>
                   <div className="space-y-2">
                     {item.wf.explanation.nodes.map((n, i) => (
-                      <div key={i} className="flex items-start gap-2 text-[12px]">
+                      <div key={`node-${item.filename}-${n.name}-${i}`} className="flex items-start gap-2 text-[12px]">
                         <span className="w-5 h-5 rounded bg-stone-100 flex items-center justify-center text-[10px] font-bold shrink-0">{i + 1}</span>
                         <div>
                           <span className="font-medium text-stone-900">{n.name}</span>
@@ -3454,7 +3457,7 @@ function CaptacionPanel({ config, setConfig, projectName, n8nWebhookUrl }) {
                 { step: "Pulsar un botón del mensaje y verificar que la rama correcta se activa", critical: false },
                 { step: "Verificar tracking: el link de Zoom lleva el user_id correcto", critical: false },
               ].map((item, i) => (
-                <div key={i} className="flex items-start gap-3">
+                <div key={`qa-${i}`} className="flex items-start gap-3">
                   <div className={`w-4 h-4 rounded border-2 shrink-0 mt-0.5 ${item.critical ? "border-red-400" : "border-stone-300"}`} />
                   <div className="text-[12px] text-stone-700">{item.step}</div>
                   {item.critical && <span className="text-[10px] text-red-700 bg-red-50 border border-red-200 px-1.5 py-0.5 rounded shrink-0">crítico</span>}
@@ -3512,7 +3515,7 @@ function MonitoringPanel({ flows, projectId }) {
   const [filter, setFilter] = useState("all");
   const [flowFilter, setFlowFilter] = useState("all");
 
-  const fetchEvents = async () => {
+  const fetchEvents = useCallback(async () => {
     if (!projectId) { setEvents(generateMockEvents(flows)); setMode("mock"); setLoading(false); return; }
     setLoading(true);
     try {
@@ -3534,9 +3537,9 @@ function MonitoringPanel({ flows, projectId }) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [projectId, flows]);
 
-  useEffect(() => { fetchEvents(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [projectId]);
+  useEffect(() => { fetchEvents(); }, [fetchEvents]);
 
   const filtered = events.filter(e => (filter === "all" || e.type === filter) && (flowFilter === "all" || e.flow === flowFilter));
   const failed = events.filter(e => e.type === "message_failed");
@@ -3546,7 +3549,7 @@ function MonitoringPanel({ flows, projectId }) {
     read: events.filter(e => e.type === "message_read").length,
     clicked: events.filter(e => e.type === "button_clicked").length,
     replied: events.filter(e => e.type === "reply_received").length,
-    failed: failed.length,
+    failed: events.filter(e => e.type === "message_failed").length,
   }), [events]);
 
   const deliveryRate = stats.sent > 0 ? Math.round((stats.delivered / stats.sent) * 100) : 0;
@@ -3754,7 +3757,7 @@ function CheckerPanel({ flows, vars, edits, creatives, templatesByMsg, variantsB
             const color = c.type === "error" ? "bg-red-50 border-red-200 text-red-900" : c.type === "warning" ? "bg-amber-50 border-amber-200 text-amber-900" : "bg-white border-stone-200 text-stone-700";
             const icon = c.type === "error" ? <AlertCircle size={14} className="text-red-700 shrink-0 mt-0.5" /> : c.type === "warning" ? <AlertTriangle size={14} className="text-amber-700 shrink-0 mt-0.5" /> : <AlertCircle size={14} className="text-stone-500 shrink-0 mt-0.5" />;
             return (
-              <div key={i} className={`flex items-start gap-3 p-3 rounded-md border ${color}`}>
+              <div key={`chk-${c.type}-${i}-${c.flowKey||""}-${c.msgKey||""}`} className={`flex items-start gap-3 p-3 rounded-md border ${color}`}>
                 {icon}
                 <div className="flex-1">
                   {c.label && <div className="text-[11px] font-semibold opacity-80">{c.label}</div>}
@@ -3851,7 +3854,7 @@ function SimulatorPanel({ flows, vars, edits }) {
           <div className="px-3 py-5 min-h-[400px] max-h-[500px] overflow-y-auto" style={{ backgroundColor: "#ECE5DD" }}>
             {path.length === 0 && !running && <div className="text-center text-stone-500 text-[12px] mt-16">Pulsa "Empezar" para iniciar la simulación</div>}
             {path.map((step, i) => (
-              <div key={i} className="mb-2">
+              <div key={`sim-${i}-${step.msgId||""}`} className="mb-2">
                 <div className="flex justify-start mb-1">
                   <div className="max-w-[85%] bg-white rounded-lg rounded-tl-none px-3 py-2 shadow-sm text-[13px] text-stone-800 whitespace-pre-wrap">{replaceVars(step.copy, vars)}</div>
                 </div>
@@ -3871,7 +3874,7 @@ function SimulatorPanel({ flows, vars, edits }) {
                 </div>
                 <div className="mt-2 space-y-1">
                   {parseButtons(currentMsg.botones).map((b, i) => (
-                    <button key={i} onClick={() => chooseNext(b)} className="w-full bg-white rounded-lg px-3 py-2 text-left text-[13px] text-[#00A5F4] shadow-sm border border-stone-200 hover:bg-stone-50">
+                    <button key={`simbtn-${i}-${b}`} onClick={() => chooseNext(b)} className="w-full bg-white rounded-lg px-3 py-2 text-left text-[13px] text-[#00A5F4] shadow-sm border border-stone-200 hover:bg-stone-50">
                       → {b}
                     </button>
                   ))}
@@ -3900,7 +3903,7 @@ function SimulatorPanel({ flows, vars, edits }) {
             ) : (
               <ol className="space-y-2">
                 {path.map((step, i) => (
-                  <li key={i} className="flex items-start gap-2">
+                  <li key={`p-${i}-${step.msgId||""}`} className="flex items-start gap-2">
                     <span className="text-[10px] font-mono bg-stone-100 px-1.5 py-0.5 rounded shrink-0">{i + 1}</span>
                     <div className="flex-1 min-w-0">
                       <div className="text-[11px] font-mono text-stone-900">{step.msgId}</div>
@@ -4030,7 +4033,7 @@ function CalendarPanel({ flows, vars }) {
                 </div>
                 <div className="divide-y divide-stone-100">
                   {items.map((it, i) => (
-                    <div key={i} className="px-4 py-2 flex items-center gap-3 text-[12px]">
+                    <div key={`cal-${it.msg.id||i}-${it.flow.key}`} className="px-4 py-2 flex items-center gap-3 text-[12px]">
                       <span className="font-mono text-[11px] text-stone-500 w-16">{it.date.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}</span>
                       <span className="font-mono text-[11px] bg-stone-100 px-1.5 py-0.5 rounded">{it.msg.id || it.msg.dia}</span>
                       <span className="text-stone-700 truncate flex-1">{it.flow.label}</span>
@@ -4167,7 +4170,7 @@ function ClientReviewPanel({ flows, vars, edits, approvalByMsg, onSetApproval, m
                     </div>
                     {btns.length > 0 && (
                       <div className="mt-1 space-y-0.5 max-w-[85%]">
-                        {btns.map((b, j) => <div key={j} className="bg-white rounded-lg px-3 py-2 text-center text-[13px] font-medium text-[#00A5F4] shadow-sm">{b}</div>)}
+                        {btns.map((b, j) => <div key={`prevbtn-${j}-${b}`} className="bg-white rounded-lg px-3 py-2 text-center text-[13px] font-medium text-[#00A5F4] shadow-sm">{b}</div>)}
                       </div>
                     )}
                   </div>
@@ -4228,7 +4231,7 @@ function HistoryPanel({ history }) {
       ) : (
         <div className="space-y-1">
           {history.slice(0, 200).map((h, i) => (
-            <div key={i} className="bg-white border border-stone-200 rounded-md px-3 py-2 flex items-center justify-between gap-2 text-[12px]">
+            <div key={`hist-${h.at||i}-${i}`} className="bg-white border border-stone-200 rounded-md px-3 py-2 flex items-center justify-between gap-2 text-[12px]">
               <div className="flex items-center gap-2 flex-1 min-w-0">
                 <span className="text-[10px] text-stone-500 font-mono w-32 shrink-0">{new Date(h.at).toLocaleString("es-ES", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}</span>
                 <span className="font-medium text-stone-900">{h.author}</span>
@@ -4351,20 +4354,20 @@ function ProjectWorkspace({ project, onBack, me, onUpdateProject }) {
     return () => clearTimeout(t);
   }, [loaded, pid]);
 
-  useEffect(() => debouncedSave("vars", vars.map(v => ({ name: v.name, value: v.value, editable: v.editable }))), [vars, loaded]);
-  useEffect(() => debouncedSave("edits", edits), [edits, loaded]);
-  useEffect(() => debouncedSave("creatives", creatives), [creatives, loaded]);
-  useEffect(() => debouncedSave("connections", connections), [connections, loaded]);
-  useEffect(() => debouncedSave("notify_config", notifyConfig), [notifyConfig, loaded]);
-  useEffect(() => debouncedSave("custom_msgs", customMsgs), [customMsgs, loaded]);
-  useEffect(() => debouncedSave("captacion", captacionConfig), [captacionConfig, loaded]);
-  useEffect(() => debouncedSave("aiPrompt", aiPrompt), [aiPrompt, loaded]);
-  useEffect(() => debouncedSave("comments", commentsByMsg), [commentsByMsg, loaded]);
-  useEffect(() => debouncedSave("variants", variantsByMsg), [variantsByMsg, loaded]);
-  useEffect(() => debouncedSave("approval", approvalByMsg), [approvalByMsg, loaded]);
-  useEffect(() => debouncedSave("templates", templatesByMsg), [templatesByMsg, loaded]);
-  useEffect(() => debouncedSave("snapshots", snapshots), [snapshots, loaded]);
-  useEffect(() => debouncedSave("history", history), [history, loaded]);
+  useEffect(() => debouncedSave("vars", vars.map(v => ({ name: v.name, value: v.value, editable: v.editable }))), [vars, loaded, debouncedSave]);
+  useEffect(() => debouncedSave("edits", edits), [edits, loaded, debouncedSave]);
+  useEffect(() => debouncedSave("creatives", creatives), [creatives, loaded, debouncedSave]);
+  useEffect(() => debouncedSave("connections", connections), [connections, loaded, debouncedSave]);
+  useEffect(() => debouncedSave("notify_config", notifyConfig), [notifyConfig, loaded, debouncedSave]);
+  useEffect(() => debouncedSave("custom_msgs", customMsgs), [customMsgs, loaded, debouncedSave]);
+  useEffect(() => debouncedSave("captacion", captacionConfig), [captacionConfig, loaded, debouncedSave]);
+  useEffect(() => debouncedSave("aiPrompt", aiPrompt), [aiPrompt, loaded, debouncedSave]);
+  useEffect(() => debouncedSave("comments", commentsByMsg), [commentsByMsg, loaded, debouncedSave]);
+  useEffect(() => debouncedSave("variants", variantsByMsg), [variantsByMsg, loaded, debouncedSave]);
+  useEffect(() => debouncedSave("approval", approvalByMsg), [approvalByMsg, loaded, debouncedSave]);
+  useEffect(() => debouncedSave("templates", templatesByMsg), [templatesByMsg, loaded, debouncedSave]);
+  useEffect(() => debouncedSave("snapshots", snapshots), [snapshots, loaded, debouncedSave]);
+  useEffect(() => debouncedSave("history", history), [history, loaded, debouncedSave]);
 
   const logHistory = (action, target) => {
     setHistory(h => [{ at: Date.now(), author: me || "Anónimo", action, target }, ...h].slice(0, 500));
@@ -4728,370 +4731,18 @@ function ProjectWorkspace({ project, onBack, me, onUpdateProject }) {
   );
 }
 
-// ====================================================================
-// PUBLIC REVIEW PAGE — vista pública accesible por /review/:token
-// No requiere login. Solo lectura del copy + aprobar / pedir cambios.
-// ====================================================================
-function PublicReviewPage({ token }) {
-  const confirm = useConfirm();
-  const [state, setState] = useState({ loading: true, error: null, data: null });
-  const [reviewerName, setReviewerName] = useState("");
-  const [savedReviewer, setSavedReviewer] = useState(false);
-  const [saving, setSaving] = useState({}); // por msgKey
-  const [commentOpen, setCommentOpen] = useState({});
-  const [commentText, setCommentText] = useState({});
-  const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
-
-  useEffect(() => {
-    (async () => {
-      try {
-        const r = await fetch(`${API}/review/${token}`);
-        if (!r.ok) {
-          const j = await r.json().catch(() => ({}));
-          throw new Error(j.detail || "Link no válido");
-        }
-        const data = await r.json();
-        setState({ loading: false, error: null, data });
-      } catch (e) {
-        setState({ loading: false, error: e.message, data: null });
-      }
-    })();
-    // Recuperar nombre del revisor previo (localStorage)
-    try {
-      const n = localStorage.getItem("waflow:reviewer_name");
-      if (n) { setReviewerName(n); setSavedReviewer(true); }
-    } catch {}
-  }, [token]);
-
-  const saveReviewer = () => {
-    if (!reviewerName.trim()) return;
-    try { localStorage.setItem("waflow:reviewer_name", reviewerName.trim()); } catch {}
-    setSavedReviewer(true);
-  };
-
-  const setApproval = async (msgKey, status, comment) => {
-    if (!savedReviewer || !reviewerName.trim()) {
-      alert("Por favor escribe tu nombre antes de aprobar o pedir cambios.");
-      return;
-    }
-    setSaving(s => ({ ...s, [msgKey]: true }));
-    try {
-      const r = await fetch(`${API}/review/${token}/approve`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ msgKey, status, by: reviewerName.trim(), comment: comment || null }),
-      });
-      if (!r.ok) throw new Error("No se pudo guardar");
-      // Actualizar estado local
-      setState(prev => {
-        const newApproval = { ...(prev.data.approval || {}) };
-        if (status === null) delete newApproval[msgKey];
-        else newApproval[msgKey] = { status, by: reviewerName.trim(), at: Date.now(), ...(comment ? { comment } : {}) };
-        return { ...prev, data: { ...prev.data, approval: newApproval } };
-      });
-    } catch (e) {
-      alert("Error al guardar: " + e.message);
-    } finally {
-      setSaving(s => ({ ...s, [msgKey]: false }));
-    }
-  };
-
-  // Computar FLOWS (con customs) ANTES de early returns, para respetar Rules of Hooks
-  const flows = useMemo(() => {
-    if (!state.data) return [];
-    const base = getFlowsForStrategy(state.data.project.strategy);
-    const customs = state.data.custom_msgs || {};
-    return base.map(f => {
-      const cs = (customs[f.key] || []).map(m => ({ ...m, _custom: true }));
-      if (cs.length === 0) return f;
-      const items = [...f.items];
-      const withPos = cs.filter(c => typeof c.position === "number").sort((a,b)=>a.position-b.position);
-      const without = cs.filter(c => typeof c.position !== "number");
-      withPos.forEach(c => { const pos = Math.max(0, Math.min(items.length, c.position)); items.splice(pos, 0, c); });
-      without.forEach(c => items.push(c));
-      return { ...f, items };
-    });
-  }, [state.data]);
-
-  if (state.loading) {
-    return (
-      <div className="min-h-screen bg-stone-50 flex items-center justify-center" style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
-        <div className="text-stone-500 text-sm">Cargando revisión...</div>
-      </div>
-    );
-  }
-  if (state.error) {
-    return (
-      <div className="min-h-screen bg-stone-50 flex items-center justify-center p-6" style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
-        <div className="bg-white border border-red-200 rounded-xl p-6 max-w-md text-center">
-          <div className="text-red-600 font-semibold mb-2">🔒 Link no válido</div>
-          <div className="text-sm text-stone-600">{state.error}</div>
-          <div className="text-[11px] text-stone-400 mt-3">Pide a tu contacto que te envíe un link actualizado.</div>
-        </div>
-      </div>
-    );
-  }
-
-  const { project, vars, edits, approval, locked, signature } = state.data;
-  const total = flows.reduce((s, f) => s + f.items.length, 0);
-  const approvedCount = Object.values(approval || {}).filter(a => a?.status === "approved").length;
-  const changesCount = Object.values(approval || {}).filter(a => a?.status === "changes").length;
-  const allApproved = total > 0 && approvedCount === total;
-
-  const signNow = async () => {
-    if (!savedReviewer || !reviewerName.trim()) { alert("Pon tu nombre antes de firmar."); return; }
-    if (!(await confirm({ title: "Firmar y cerrar la revisión", message: "Después de firmar no se podrán modificar más aprobaciones ni pedir cambios. Se generará un hash digital como constancia.", confirmLabel: "Firmar y cerrar", danger: true }))) return;
-    try {
-      const r = await fetch(`${API}/review/${token}/sign`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ signer_name: reviewerName.trim(), signer_role: "" }),
-      });
-      const data = await r.json();
-      if (!r.ok) throw new Error(data.detail || "Error al firmar");
-      // Recargar para mostrar la firma
-      const r2 = await fetch(`${API}/review/${token}`);
-      const d2 = await r2.json();
-      setState({ loading: false, error: null, data: d2 });
-    } catch (e) {
-      alert("Error al firmar: " + e.message);
-    }
-  };
-
-  return (
-    <div className="min-h-screen bg-stone-50" style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
-      <header className="bg-white border-b border-stone-200 sticky top-0 z-20">
-        <div className="max-w-3xl mx-auto px-5 py-3 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3 min-w-0">
-            <img src="/fascinads-logo.png" alt="Fascinads" className="h-5 w-auto select-none" draggable="false" />
-            <div className="h-5 w-px bg-stone-200" />
-            <div className="min-w-0">
-              <div className="text-[10px] uppercase tracking-widest text-stone-500">Revisión</div>
-              <div className="text-sm font-bold text-stone-900 truncate">{project.name}</div>
-            </div>
-          </div>
-          <div className="text-[10px] text-stone-500 text-right">
-            <div>{approvedCount}/{total} aprobados</div>
-            {changesCount > 0 && <div className="text-amber-700">{changesCount} con cambios</div>}
-          </div>
-        </div>
-      </header>
-
-      <main className="max-w-3xl mx-auto px-5 py-6">
-        {/* Nombre del revisor */}
-        <div className="bg-white border border-stone-200 rounded-xl p-4 mb-5" data-testid="reviewer-name-card">
-          <div className="text-[11px] font-semibold tracking-widest text-stone-500 uppercase mb-2">Antes de empezar</div>
-          {!savedReviewer ? (
-            <div className="flex items-center gap-2 flex-wrap">
-              <input autoFocus value={reviewerName} onChange={e => setReviewerName(e.target.value)} placeholder="Tu nombre"
-                data-testid="reviewer-name-input"
-                className="flex-1 min-w-[200px] px-3 py-2 text-sm border border-stone-200 rounded-md focus:outline-none focus:border-stone-900"
-                onKeyDown={e => e.key === "Enter" && saveReviewer()} />
-              <button onClick={saveReviewer} disabled={!reviewerName.trim()}
-                data-testid="reviewer-name-save"
-                className="px-4 py-2 text-sm font-medium bg-stone-900 text-white rounded-md hover:bg-stone-700 disabled:opacity-50">
-                Entrar a revisar
-              </button>
-            </div>
-          ) : (
-            <div className="flex items-center justify-between">
-              <div className="text-sm text-stone-800">Revisando como <strong>{reviewerName}</strong></div>
-              <button onClick={() => { setSavedReviewer(false); }} className="text-[11px] text-stone-500 hover:text-stone-900 underline">Cambiar</button>
-            </div>
-          )}
-        </div>
-
-        <div className="bg-gradient-to-br from-emerald-500 to-emerald-700 rounded-xl p-5 text-white mb-5">
-          <div className="text-[11px] uppercase tracking-widest opacity-75">Progreso de revisión</div>
-          <div className="text-lg font-bold mt-1">{approvedCount} de {total} mensajes aprobados</div>
-          <div className="mt-3 bg-white/20 rounded-full h-2">
-            <div className="h-full bg-white rounded-full transition-all" style={{ width: `${total > 0 ? (approvedCount / total * 100) : 0}%` }} />
-          </div>
-        </div>
-
-        {locked && signature && (
-          <div className="bg-gradient-to-br from-indigo-600 to-violet-700 rounded-xl p-5 text-white mb-5" data-testid="signature-card">
-            <div className="flex items-center gap-2 mb-2">
-              <div className="text-2xl">🔐</div>
-              <div>
-                <div className="text-[11px] uppercase tracking-widest opacity-75">Revisión firmada y cerrada</div>
-                <div className="text-lg font-bold">Firmado por {signature.signer_name}</div>
-              </div>
-            </div>
-            <div className="text-[11.5px] opacity-90 leading-relaxed">
-              Fecha: {signature.signed_at ? new Date(signature.signed_at).toLocaleString("es-ES") : "—"}<br/>
-              Hash SHA-256: <code className="font-mono text-[10px] bg-white/10 px-1.5 py-0.5 rounded break-all">{signature.signature_hash}</code>
-            </div>
-            <div className="text-[10.5px] opacity-75 mt-2">Este contenido ya no puede modificarse. El PDF descargable incluye la firma digital.</div>
-          </div>
-        )}
-
-        {allApproved && !locked && savedReviewer && (
-          <div className="bg-gradient-to-br from-amber-50 to-orange-50 border-2 border-amber-300 rounded-xl p-5 mb-5" data-testid="sign-cta-card">
-            <div className="flex items-start gap-3">
-              <div className="text-3xl">✨</div>
-              <div className="flex-1">
-                <div className="font-bold text-amber-900 text-base mb-1">¡Todos los mensajes aprobados!</div>
-                <div className="text-[12.5px] text-amber-900/80 mb-3 leading-relaxed">
-                  Puedes <strong>firmar y cerrar</strong> esta revisión. Se generará un PDF con firma digital (SHA-256) como constancia de aprobación. Después de firmar no podrás hacer más cambios.
-                </div>
-                <button onClick={signNow} data-testid="sign-close-btn"
-                  className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold bg-amber-600 text-white rounded-md hover:bg-amber-700">
-                  🔐 Firmar y cerrar revisión
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {flows.map(f => (
-          <div key={f.key} className="mb-6">
-            <div className="text-[10px] font-semibold tracking-widest text-stone-500 uppercase mb-3">{f.label}</div>
-            <div className="space-y-3">
-              {f.items.map((m, i) => {
-                const mk = `${f.key}:${m.id || i}`;
-                const copy = replaceVars(edits?.[mk] ?? m.copy, vars);
-                const btns = parseButtons(replaceVars(m.botones, vars));
-                const app = approval?.[mk];
-                const isOpen = commentOpen[mk];
-                const isSaving = saving[mk];
-
-                return (
-                  <div key={mk} className={`bg-white rounded-xl overflow-hidden border-2 transition ${
-                    app?.status === "approved" ? "border-emerald-300" :
-                    app?.status === "changes" ? "border-amber-300" : "border-stone-200"
-                  }`} data-testid={`review-msg-${mk}`}>
-                    <div className="px-4 py-2 bg-stone-50 border-b border-stone-200 flex items-center justify-between gap-2">
-                      <div className="text-[11px] font-mono font-semibold">{m.id || m.dia} · {m.timing || m.hora}</div>
-                      {app?.status === "approved" && <span className="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full">✓ Aprobado por {app.by}</span>}
-                      {app?.status === "changes" && <span className="text-[10px] bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full">✎ Cambios por {app.by}</span>}
-                    </div>
-                    <div className="p-4" style={{ backgroundColor: "#ECE5DD" }}>
-                      <div className="max-w-[85%] bg-white rounded-lg rounded-tl-none px-3 py-2 shadow-sm">
-                        <div className="text-[13.5px] text-stone-800 whitespace-pre-wrap leading-[1.35]">{copy}</div>
-                      </div>
-                      {btns.length > 0 && (
-                        <div className="mt-1 space-y-0.5 max-w-[85%]">
-                          {btns.map((b, j) => <div key={j} className="bg-white rounded-lg px-3 py-2 text-center text-[13px] font-medium text-[#00A5F4] shadow-sm">{b}</div>)}
-                        </div>
-                      )}
-                    </div>
-                    <div className="px-4 py-3 border-t border-stone-200 bg-white flex items-center gap-2 flex-wrap">
-                      {locked ? (
-                        <div className="text-[11.5px] text-stone-500 italic">🔐 Revisión firmada y cerrada · no se admiten más cambios</div>
-                      ) : (
-                        <>
-                          <button onClick={() => setApproval(mk, "approved")} disabled={isSaving}
-                            data-testid={`approve-btn-${mk}`}
-                            className={`text-xs px-3 py-1.5 rounded-md border font-medium transition ${app?.status === "approved" ? "bg-emerald-600 text-white border-emerald-600" : "bg-white border-emerald-300 text-emerald-700 hover:bg-emerald-50"} disabled:opacity-50`}>
-                            ✓ Aprobar
-                          </button>
-                          <button onClick={() => setCommentOpen(p => ({ ...p, [mk]: !p[mk] }))} disabled={isSaving}
-                            data-testid={`changes-btn-${mk}`}
-                            className={`text-xs px-3 py-1.5 rounded-md border font-medium transition ${app?.status === "changes" ? "bg-amber-600 text-white border-amber-600" : "bg-white border-amber-300 text-amber-700 hover:bg-amber-50"} disabled:opacity-50`}>
-                            ✎ Pedir cambios
-                          </button>
-                          {app && <button onClick={() => setApproval(mk, null)} disabled={isSaving} className="text-xs text-stone-500 hover:text-stone-900 disabled:opacity-50">Borrar estado</button>}
-                          {isSaving && <span className="text-[10px] text-stone-400">guardando…</span>}
-                        </>
-                      )}
-                    </div>
-                    {isOpen && (
-                      <div className="px-4 py-3 border-t border-stone-200 bg-stone-50">
-                        <textarea value={commentText[mk] || ""} onChange={e => setCommentText({ ...commentText, [mk]: e.target.value })}
-                          placeholder="¿Qué cambiarías? (opcional)" className="w-full p-2 text-sm border border-stone-200 rounded-md min-h-[60px]" />
-                        <div className="flex justify-end gap-2 mt-2">
-                          <button onClick={() => setCommentOpen(p => ({ ...p, [mk]: false }))} className="text-xs px-2 py-1 text-stone-500">Cancelar</button>
-                          <button onClick={() => { setApproval(mk, "changes", commentText[mk] || ""); setCommentOpen(p => ({ ...p, [mk]: false })); }}
-                            className="text-xs px-3 py-1 bg-amber-600 text-white rounded-md hover:bg-amber-700">
-                            Enviar cambios
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                    {app?.comment && (
-                      <div className="px-4 py-2 bg-amber-50 border-t border-amber-200 text-[12px] text-amber-900">
-                        <strong>Nota de {app.by}:</strong> {app.comment}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        ))}
-
-        <div className="text-center text-[11px] text-stone-400 py-6">
-          <a href={`${API}/review/${token}/summary.pdf`} target="_blank" rel="noreferrer"
-            data-testid="download-pdf-btn"
-            className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-indigo-700 bg-white border border-indigo-300 rounded-md hover:bg-indigo-50 mb-4">
-            <Download size={14} /> Descargar resumen (PDF)
-          </a>
-          <div>Powered by WAFLOW · by Fascinads</div>
-        </div>
-      </main>
-    </div>
-  );
-}
-
-// ====================================================================
-// CONFIRM DIALOG — reemplaza window.confirm (bloqueado en iframes)
-// ====================================================================
-function ConfirmDialog({ open, title, message, confirmLabel = "Confirmar", cancelLabel = "Cancelar", danger = false, onConfirm, onCancel }) {
-  if (!open) return null;
-  return (
-    <div className="fixed inset-0 bg-black/60 z-[70] flex items-center justify-center p-4" onClick={onCancel}>
-      <div className="bg-white rounded-xl shadow-2xl max-w-md w-full overflow-hidden" onClick={e => e.stopPropagation()}>
-        <div className="p-6">
-          <div className={`text-lg font-bold ${danger ? "text-red-700" : "text-stone-900"} mb-2`}>{title}</div>
-          <div className="text-sm text-stone-600 whitespace-pre-line">{message}</div>
-        </div>
-        <div className="px-6 py-3 bg-stone-50 border-t border-stone-200 flex justify-end gap-2">
-          <button onClick={onCancel} data-testid="confirm-dialog-cancel"
-            className="px-4 py-2 text-sm font-medium text-stone-700 hover:text-stone-900">
-            {cancelLabel}
-          </button>
-          <button onClick={onConfirm} data-testid="confirm-dialog-ok"
-            className={`px-4 py-2 text-sm font-medium rounded-md text-white ${danger ? "bg-red-600 hover:bg-red-700" : "bg-stone-900 hover:bg-stone-700"}`}>
-            {confirmLabel}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// Contexto global para poder hacer `await confirm({...})` desde cualquier componente
-const ConfirmContext = React.createContext(null);
-export const useConfirm = () => React.useContext(ConfirmContext);
-function ConfirmProvider({ children }) {
-  const [state, setState] = useState(null);
-  const ask = React.useCallback((opts) => new Promise(resolve => {
-    setState({
-      ...opts,
-      onConfirm: () => { setState(null); resolve(true); },
-      onCancel: () => { setState(null); resolve(false); },
-    });
-  }), []);
-  return (
-    <ConfirmContext.Provider value={ask}>
-      {children}
-      <ConfirmDialog open={!!state} {...(state || {})} />
-    </ConfirmContext.Provider>
-  );
-}
 
 // ====================================================================
 // APP RAÍZ — gestión proyectos
 // ====================================================================
 function MainApp() {
+  const askConfirm = useConfirm();
   const [projects, setProjects] = useState([]);
   const [activeId, setActiveId] = useState(null);
   const [me, setMe] = useState("");
   const [showProjectDialog, setShowProjectDialog] = useState(null); // { isNew, project }
   const [showMeDialog, setShowMeDialog] = useState(false);
   const [loaded, setLoaded] = useState(false);
-  const [confirmDialog, setConfirmDialog] = useState(null); // {title,message,confirmLabel,danger,onConfirm}
 
   useEffect(() => {
     (async () => {
@@ -5137,19 +4788,17 @@ function MainApp() {
     setProjects(ps => ps.map(x => x.id === id ? { ...x, ...patch, updated_at: Date.now() } : x));
   };
   const handleDelete = async (p) => {
-    setConfirmDialog({
+    const ok = await askConfirm({
       title: `Eliminar "${p.name}"`,
       message: `¿Seguro que quieres eliminar este proyecto DEFINITIVAMENTE?\n\nTodos sus datos (variables, ediciones, creativos, conexiones, aprobaciones, snapshots, historial) se perderán y no se puede deshacer.`,
       confirmLabel: "Eliminar definitivamente",
       danger: true,
-      onConfirm: async () => {
-        setConfirmDialog(null);
-        const keys = ["vars", "edits", "creatives", "connections", "notify_config", "aiPrompt", "comments", "variants", "approval", "templates", "snapshots", "history", "captacion"];
-        for (const k of keys) await deleteFromStorage(pk(p.id, k));
-        setProjects(ps => ps.filter(x => x.id !== p.id));
-        if (activeId === p.id) setActiveId(null);
-      },
     });
+    if (!ok) return;
+    const keys = ["vars", "edits", "creatives", "connections", "notify_config", "aiPrompt", "comments", "variants", "approval", "templates", "snapshots", "history", "captacion"];
+    for (const k of keys) await deleteFromStorage(pk(p.id, k));
+    setProjects(ps => ps.filter(x => x.id !== p.id));
+    if (activeId === p.id) setActiveId(null);
   };
 
   if (!loaded) return <div className="min-h-screen flex items-center justify-center bg-stone-50 text-stone-500 text-sm">Cargando...</div>;
@@ -5184,15 +4833,6 @@ function MainApp() {
       {showMeDialog && (
         <MeDialog me={me} onSave={n => { setMe(n); setShowMeDialog(false); }} onClose={() => setShowMeDialog(false)} />
       )}
-      <ConfirmDialog
-        open={!!confirmDialog}
-        title={confirmDialog?.title}
-        message={confirmDialog?.message}
-        confirmLabel={confirmDialog?.confirmLabel}
-        danger={confirmDialog?.danger}
-        onConfirm={confirmDialog?.onConfirm}
-        onCancel={() => setConfirmDialog(null)}
-      />
     </>
   );
 }

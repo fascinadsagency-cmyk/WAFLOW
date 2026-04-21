@@ -1,0 +1,33 @@
+{
+  "summary": "Iter-8 — Validación completa del code review refactor (fases 1-3). BACKEND: 19/19 PASS (test_iter7 13 + test_review 6) sin regresiones. Los 3 helpers async _test_meta_connection/_test_evolution_connection/_test_n8n_connection están presentes (server.py:246-292) y funcionan: meta dummy ok:false, n8n_webhook httpbin.org ok:true con header X-WAFLOW-Test:1 (línea 292), tipo desconocido devuelve ok:false con error 'Tipo desconocido: xxx'. Los 5 helpers _pdf_styles/_pdf_header/_pdf_stats_table/_pdf_messages_section/_pdf_signature_section (server.py:615-740) se integran correctamente: POST /review/create → token, /approve, /sign, GET /summary.pdf devuelve application/pdf con magic bytes %PDF (test_review_flow PASS). FRONTEND: (1) '/' carga sin 'Compiled with problems', título 'WAFLOW · by Fascinads'. (2) Modal '¿Cómo te llamas?' aparece, fill 'QA' + Guardar → desaparece OK. (3) 6 flujos en sidebar (Flujo A + 1-1 Pre-webinar + Broadcasts + Venta 1-1 + Venta comunidad + Replay). (4) Tab Conexiones: test-meta-btn, test-evolution-btn, meta-send-test-btn presentes y clickables sin crash. (5) useConfirm refactor verificado end-to-end: click en botón Eliminar de un proyecto en ProjectsDashboard (title='Eliminar' con opacity en hover) dispara ConfirmDialog custom con data-testid='confirm-dialog-ok'/'confirm-dialog-cancel' — Cancel mantiene los 8 proyectos (NO eliminado), demostrando que MainApp migró de state local confirmDialog a askConfirm() hook correctamente. (6) PublicReviewPage extraída (/app/frontend/src/pages/PublicReviewPage.jsx): navegar a /review/<token_válido> renderiza SIN errores — logo fascinads OK, reviewer-name-card (1), 73 review-msg-* cards, 73 approve-btn-*, 73 changes-btn-*, download-pdf-btn descarga PDF real (WAFLOW_TEST_iter8_review_20260421.pdf). (7) Tab Salud (MonitoringPanel con fetchEvents+useCallback) carga sin errores. (8) Tab Prompt IA → click 'Probar prompt' → chat visible con ai-llm-usage-badge (count=1). CERO console errors y CERO pageerror capturados durante toda la sesión. Los imports de ConfirmProvider from './hooks/useConfirm' (App.jsx:12) y PublicReviewPage from './pages/PublicReviewPage' (App.jsx:13) están correctos; App.jsx efectivamente ~4851 líneas.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter7.py",
+    "/app/backend/tests/test_review.py",
+    "/app/test_reports/pytest/pytest_iter8.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "App.jsx todavía tiene 4851 líneas — la reducción de 360 líneas es buena, pero falta extraer ConnectionsPanel (~200 líneas), MessageCard (~400 líneas) y MainApp body para bajar de 3000. No bloqueante en esta iteración, pero recomendado en la próxima.",
+    "ProjectsDashboard delete button usa title='Eliminar' y opacity-0 hover-only. Añadir data-testid='delete-project-{id}' al botón Trash2 (línea App.jsx:1405) facilitaría testing automatizado sin depender del hover.",
+    "server.py:292 — el header X-WAFLOW-Test:1 se envía al webhook de prueba, tal como se había pedido en el feedback iter-7. OK. Considera también documentarlo en el UI (help text junto al botón 'Probar conexión n8n') para que el cliente sepa que debe filtrar esa flag en su flujo de producción.",
+    "Los storage-shim.js keys compound (btn-${i}-${b}) y el catch con console.warn reducen warnings pero el linter de react-hooks/exhaustive-deps está suprimido solo parcialmente; mantener el eslint-plugin-react-hooks a versión estable y vigilar nuevos warnings en próximos PRs.",
+    "PublicReviewPage.jsx es ~280 líneas — buena arquitectura con sub-componentes (ReviewHeader, ReviewerNameCard, ProgressCard, SignatureCard, SignCtaCard, ReviewMessageCard). Considerar añadir tests unitarios React Testing Library para estos componentes aislados en el futuro."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "100% (19/19 pytest + 3 manual curl: n8n header, unknown type, PDF endpoint)",
+    "frontend": "100% — 6/6 flujos de la request testeados end-to-end sin errores"
+  },
+  "test_credentials": "No auth. Proyecto seed usado: 'TEST iter8 review' (id=TEST_iter8_review_pub) creado vía /api/storage/set para generar el token de PublicReviewPage.",
+  "seed_data_creation": "TEST_iter8_review_pub project seeded en wa_editor:projects_list + /api/review/create con project_id=TEST_iter8_review_pub generó token zINWqeyj6HACYEvxsD3NkUu- usado para probar /review/<token>. Teardown manual no es necesario (datos TEST_ prefijados).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "El refactor completo (storage-shim fix + compound keys + test_connection 3 helpers + review_summary_pdf 5 helpers + 18 react-hooks deps + ConfirmProvider/useConfirm extraído a src/hooks/useConfirm.jsx + PublicReviewPage extraído a src/pages/PublicReviewPage.jsx + waflow-utils.js) está funcionando correctamente. App.jsx: 4851 líneas. 0 console errors, 0 page errors. Los testids clave: test-meta-btn, test-evolution-btn, meta-send-test-btn (ConnectionsPanel); confirm-dialog-ok/cancel (useConfirm); reviewer-name-card, review-msg-{mk}, approve-btn-{mk}, changes-btn-{mk}, download-pdf-btn (PublicReviewPage); ai-llm-usage-badge (AIPromptPanel). Token de review de prueba: zINWqeyj6HACYEvxsD3NkUu- (válido hasta 30 días). Para reproducir: POST /api/review/create con project_id que exista en wa_editor:projects_list storage.",
+  "rca_of_the_issue": "No hay bugs. Todos los criterios del review request validados: (1) backend regression 19/19 PASS, (2) 3 helpers test-connection funcionan con los 3 types + unknown, (3) 5 helpers PDF integran correctamente, (4) frontend carga limpio sin compiled problems, (5) Conexiones tab OK, (6) useConfirm ConfirmDialog funciona con ok/cancel testids, (7) PublicReviewPage renderiza todos los testids esperados + download PDF funciona, (8) Salud+Prompt IA OK."
+}
