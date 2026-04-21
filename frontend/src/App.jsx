@@ -876,11 +876,10 @@ function ProjectsDashboard({ projects, onOpen, onCreate, onEdit, onDuplicate, on
       <header className="bg-white border-b border-stone-200">
         <div className="max-w-[1400px] mx-auto px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="bg-black rounded-lg px-3 py-2 flex items-center justify-center">
-              <img src="/fascinads-logo.png" alt="FASCINADS" className="h-6 w-auto select-none" draggable="false" />
-            </div>
+            <img src="/fascinads-logo.png" alt="Fascinads" className="h-7 w-auto select-none" draggable="false" />
+            <div className="h-6 w-px bg-stone-200" />
             <div>
-              <div className="text-sm font-semibold text-stone-900 tracking-tight">Flow Editor</div>
+              <div className="text-lg font-bold text-stone-900 tracking-tight">WAFLOW</div>
               <div className="text-[11px] text-stone-500">Panel de proyectos · {activeCount} activos · {archivedCount} archivados</div>
             </div>
           </div>
@@ -2654,7 +2653,77 @@ function CalendarPanel({ flows, vars }) {
 // ====================================================================
 // PANEL CLIENTE (modo revisión)
 // ====================================================================
-function ClientReviewPanel({ flows, vars, edits, approvalByMsg, onSetApproval, me, projectName }) {
+function MagicLinkCard({ projectId }) {
+  const [state, setState] = useState({ loading: false, token: null, error: null, copied: false });
+
+  const generate = async () => {
+    setState(s => ({ ...s, loading: true, error: null }));
+    try {
+      const r = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/review/create`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ project_id: projectId }),
+      });
+      if (!r.ok) throw new Error("No se pudo generar");
+      const j = await r.json();
+      setState({ loading: false, token: j.token, error: null, copied: false });
+    } catch (e) {
+      setState({ loading: false, token: null, error: e.message, copied: false });
+    }
+  };
+
+  const fullUrl = state.token ? `${window.location.origin}/review/${state.token}` : "";
+
+  const copy = async () => {
+    if (!fullUrl) return;
+    try { await navigator.clipboard.writeText(fullUrl); } catch {
+      const ta = document.createElement("textarea"); ta.value = fullUrl;
+      document.body.appendChild(ta); ta.select(); document.execCommand("copy"); document.body.removeChild(ta);
+    }
+    setState(s => ({ ...s, copied: true }));
+    setTimeout(() => setState(s => ({ ...s, copied: false })), 1600);
+  };
+
+  return (
+    <div className="bg-gradient-to-br from-indigo-50 to-violet-50 border-2 border-indigo-200 rounded-xl p-5 mb-5" data-testid="magic-link-card">
+      <div className="flex items-center gap-2 mb-2">
+        <LinkIcon size={14} className="text-indigo-700" />
+        <div className="text-[11px] font-semibold tracking-widest text-indigo-900 uppercase">Link mágico para el cliente</div>
+      </div>
+      <div className="text-[12px] text-indigo-900/80 mb-3 leading-relaxed">
+        Genera una URL pública (solo lectura + aprobación) que puedes enviar a tu cliente. No necesita cuenta ni login.
+      </div>
+
+      {!state.token ? (
+        <button onClick={generate} disabled={state.loading}
+          data-testid="generate-magic-link-btn"
+          className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-indigo-600 text-white rounded-md hover:bg-indigo-700 disabled:opacity-50">
+          <Zap size={14} /> {state.loading ? "Generando…" : "Generar link de aprobación"}
+        </button>
+      ) : (
+        <div className="flex items-center gap-2 flex-wrap">
+          <input readOnly value={fullUrl}
+            data-testid="magic-link-url"
+            onClick={e => e.target.select()}
+            className="flex-1 min-w-[260px] px-3 py-2 text-xs font-mono bg-white border border-indigo-200 rounded-md text-indigo-900 focus:outline-none focus:border-indigo-600" />
+          <button onClick={copy} data-testid="copy-magic-link-btn"
+            className={`inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-md border transition ${
+              state.copied ? "bg-emerald-50 text-emerald-700 border-emerald-300" : "bg-white text-indigo-700 border-indigo-300 hover:bg-indigo-50"
+            }`}>
+            {state.copied ? <><Check size={13} /> Copiado</> : <><Copy size={13} /> Copiar</>}
+          </button>
+          <a href={fullUrl} target="_blank" rel="noreferrer" data-testid="open-magic-link-btn"
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium bg-indigo-600 text-white rounded-md hover:bg-indigo-700">
+            <ExternalLink size={13} /> Abrir
+          </a>
+        </div>
+      )}
+      {state.error && <div className="mt-2 text-[12px] text-red-700">{state.error}</div>}
+    </div>
+  );
+}
+
+function ClientReviewPanel({ flows, vars, edits, approvalByMsg, onSetApproval, me, projectName, projectId }) {
   const [commentBoxOpen, setCommentBoxOpen] = useState({});
   const [commentText, setCommentText] = useState({});
 
@@ -2664,6 +2733,7 @@ function ClientReviewPanel({ flows, vars, edits, approvalByMsg, onSetApproval, m
 
   return (
     <div className="space-y-5 max-w-3xl">
+      {projectId && <MagicLinkCard projectId={projectId} />}
       <div className="bg-gradient-to-br from-emerald-500 to-emerald-700 rounded-xl p-6 text-white">
         <div className="text-[11px] uppercase tracking-widest opacity-75">Revisión del cliente</div>
         <div className="text-2xl font-bold mt-1">{projectName}</div>
@@ -3012,9 +3082,8 @@ function ProjectWorkspace({ project, onBack, me }) {
           <div className="flex items-center justify-between gap-4 mb-3">
             <div className="flex items-center gap-3 min-w-0">
               <button onClick={onBack} className="text-stone-500 hover:text-stone-900 p-1.5 rounded hover:bg-stone-100"><ArrowLeft size={16} /></button>
-              <div className="bg-black rounded-md px-2 py-1 flex items-center justify-center shrink-0">
-                <img src="/fascinads-logo.png" alt="FASCINADS" className="h-4 w-auto select-none" draggable="false" />
-              </div>
+              <img src="/fascinads-logo.png" alt="Fascinads" className="h-5 w-auto select-none shrink-0" draggable="false" />
+              <div className="h-6 w-px bg-stone-200" />
               <div className="w-8 h-8 rounded-lg flex items-center justify-center text-lg" style={{ backgroundColor: project.color + "22", border: `2px solid ${project.color}` }}>{project.emoji}</div>
               <div className="min-w-0">
                 <div className="text-sm font-bold tracking-tight text-stone-900 truncate">{project.name}</div>
@@ -3102,7 +3171,7 @@ function ProjectWorkspace({ project, onBack, me }) {
         {activeTab === "checker" && <main className="flex-1 min-w-0 px-8 py-8"><CheckerPanel flows={FLOWS} vars={vars} edits={edits} creatives={creatives} templatesByMsg={templatesByMsg} variantsByMsg={variantsByMsg} onGoToMessage={goToMessage} /></main>}
         {activeTab === "creatives" && <main className="flex-1 min-w-0 px-8 py-8"><CreativesPanel creatives={creatives} setCreatives={setCreatives} allMessages={allMessages} /></main>}
         {activeTab === "monitoring" && <main className="flex-1 min-w-0 px-8 py-8"><MonitoringPanel flows={FLOWS} /></main>}
-        {activeTab === "client" && <main className="flex-1 min-w-0 px-8 py-8"><ClientReviewPanel flows={FLOWS} vars={vars} edits={edits} approvalByMsg={approvalByMsg} onSetApproval={setApproval} me={me} projectName={project.name} /></main>}
+        {activeTab === "client" && <main className="flex-1 min-w-0 px-8 py-8"><ClientReviewPanel flows={FLOWS} vars={vars} edits={edits} approvalByMsg={approvalByMsg} onSetApproval={setApproval} me={me} projectName={project.name} projectId={project.id} /></main>}
         {activeTab === "snapshots" && <main className="flex-1 min-w-0 px-8 py-8"><SnapshotsPanel snapshots={snapshots} onCreate={createSnapshot} onRestore={restoreSnapshot} onDelete={deleteSnapshot} /></main>}
         {activeTab === "history" && <main className="flex-1 min-w-0 px-8 py-8"><HistoryPanel history={history} /></main>}
         {activeTab === "connections" && <main className="flex-1 min-w-0 px-8 py-8"><ConnectionsPanel conn={connections} setConn={setConnections} projectName={project.name} /></main>}
@@ -3116,9 +3185,231 @@ function ProjectWorkspace({ project, onBack, me }) {
 }
 
 // ====================================================================
+// PUBLIC REVIEW PAGE — vista pública accesible por /review/:token
+// No requiere login. Solo lectura del copy + aprobar / pedir cambios.
+// ====================================================================
+function PublicReviewPage({ token }) {
+  const [state, setState] = useState({ loading: true, error: null, data: null });
+  const [reviewerName, setReviewerName] = useState("");
+  const [savedReviewer, setSavedReviewer] = useState(false);
+  const [saving, setSaving] = useState({}); // por msgKey
+  const [commentOpen, setCommentOpen] = useState({});
+  const [commentText, setCommentText] = useState({});
+  const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await fetch(`${API}/review/${token}`);
+        if (!r.ok) {
+          const j = await r.json().catch(() => ({}));
+          throw new Error(j.detail || "Link no válido");
+        }
+        const data = await r.json();
+        setState({ loading: false, error: null, data });
+      } catch (e) {
+        setState({ loading: false, error: e.message, data: null });
+      }
+    })();
+    // Recuperar nombre del revisor previo (localStorage)
+    try {
+      const n = localStorage.getItem("waflow:reviewer_name");
+      if (n) { setReviewerName(n); setSavedReviewer(true); }
+    } catch {}
+  }, [token]);
+
+  const saveReviewer = () => {
+    if (!reviewerName.trim()) return;
+    try { localStorage.setItem("waflow:reviewer_name", reviewerName.trim()); } catch {}
+    setSavedReviewer(true);
+  };
+
+  const setApproval = async (msgKey, status, comment) => {
+    if (!savedReviewer || !reviewerName.trim()) {
+      alert("Por favor escribe tu nombre antes de aprobar o pedir cambios.");
+      return;
+    }
+    setSaving(s => ({ ...s, [msgKey]: true }));
+    try {
+      const r = await fetch(`${API}/review/${token}/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ msgKey, status, by: reviewerName.trim(), comment: comment || null }),
+      });
+      if (!r.ok) throw new Error("No se pudo guardar");
+      // Actualizar estado local
+      setState(prev => {
+        const newApproval = { ...(prev.data.approval || {}) };
+        if (status === null) delete newApproval[msgKey];
+        else newApproval[msgKey] = { status, by: reviewerName.trim(), at: Date.now(), ...(comment ? { comment } : {}) };
+        return { ...prev, data: { ...prev.data, approval: newApproval } };
+      });
+    } catch (e) {
+      alert("Error al guardar: " + e.message);
+    } finally {
+      setSaving(s => ({ ...s, [msgKey]: false }));
+    }
+  };
+
+  if (state.loading) {
+    return (
+      <div className="min-h-screen bg-stone-50 flex items-center justify-center" style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
+        <div className="text-stone-500 text-sm">Cargando revisión...</div>
+      </div>
+    );
+  }
+  if (state.error) {
+    return (
+      <div className="min-h-screen bg-stone-50 flex items-center justify-center p-6" style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
+        <div className="bg-white border border-red-200 rounded-xl p-6 max-w-md text-center">
+          <div className="text-red-600 font-semibold mb-2">🔒 Link no válido</div>
+          <div className="text-sm text-stone-600">{state.error}</div>
+          <div className="text-[11px] text-stone-400 mt-3">Pide a tu contacto que te envíe un link actualizado.</div>
+        </div>
+      </div>
+    );
+  }
+
+  const { project, vars, edits, approval } = state.data;
+  const flows = getFlowsForStrategy(project.strategy);
+  const total = flows.reduce((s, f) => s + f.items.length, 0);
+  const approvedCount = Object.values(approval || {}).filter(a => a?.status === "approved").length;
+  const changesCount = Object.values(approval || {}).filter(a => a?.status === "changes").length;
+
+  return (
+    <div className="min-h-screen bg-stone-50" style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
+      <header className="bg-white border-b border-stone-200 sticky top-0 z-20">
+        <div className="max-w-3xl mx-auto px-5 py-3 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <img src="/fascinads-logo.png" alt="Fascinads" className="h-5 w-auto select-none" draggable="false" />
+            <div className="h-5 w-px bg-stone-200" />
+            <div className="min-w-0">
+              <div className="text-[10px] uppercase tracking-widest text-stone-500">Revisión</div>
+              <div className="text-sm font-bold text-stone-900 truncate">{project.name}</div>
+            </div>
+          </div>
+          <div className="text-[10px] text-stone-500 text-right">
+            <div>{approvedCount}/{total} aprobados</div>
+            {changesCount > 0 && <div className="text-amber-700">{changesCount} con cambios</div>}
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-3xl mx-auto px-5 py-6">
+        {/* Nombre del revisor */}
+        <div className="bg-white border border-stone-200 rounded-xl p-4 mb-5" data-testid="reviewer-name-card">
+          <div className="text-[11px] font-semibold tracking-widest text-stone-500 uppercase mb-2">Antes de empezar</div>
+          {!savedReviewer ? (
+            <div className="flex items-center gap-2 flex-wrap">
+              <input autoFocus value={reviewerName} onChange={e => setReviewerName(e.target.value)} placeholder="Tu nombre"
+                data-testid="reviewer-name-input"
+                className="flex-1 min-w-[200px] px-3 py-2 text-sm border border-stone-200 rounded-md focus:outline-none focus:border-stone-900"
+                onKeyDown={e => e.key === "Enter" && saveReviewer()} />
+              <button onClick={saveReviewer} disabled={!reviewerName.trim()}
+                data-testid="reviewer-name-save"
+                className="px-4 py-2 text-sm font-medium bg-stone-900 text-white rounded-md hover:bg-stone-700 disabled:opacity-50">
+                Entrar a revisar
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between">
+              <div className="text-sm text-stone-800">Revisando como <strong>{reviewerName}</strong></div>
+              <button onClick={() => { setSavedReviewer(false); }} className="text-[11px] text-stone-500 hover:text-stone-900 underline">Cambiar</button>
+            </div>
+          )}
+        </div>
+
+        <div className="bg-gradient-to-br from-emerald-500 to-emerald-700 rounded-xl p-5 text-white mb-5">
+          <div className="text-[11px] uppercase tracking-widest opacity-75">Progreso de revisión</div>
+          <div className="text-lg font-bold mt-1">{approvedCount} de {total} mensajes aprobados</div>
+          <div className="mt-3 bg-white/20 rounded-full h-2">
+            <div className="h-full bg-white rounded-full transition-all" style={{ width: `${total > 0 ? (approvedCount / total * 100) : 0}%` }} />
+          </div>
+        </div>
+
+        {flows.map(f => (
+          <div key={f.key} className="mb-6">
+            <div className="text-[10px] font-semibold tracking-widest text-stone-500 uppercase mb-3">{f.label}</div>
+            <div className="space-y-3">
+              {f.items.map((m, i) => {
+                const mk = `${f.key}:${m.id || i}`;
+                const copy = replaceVars(edits?.[mk] ?? m.copy, vars);
+                const btns = parseButtons(replaceVars(m.botones, vars));
+                const app = approval?.[mk];
+                const isOpen = commentOpen[mk];
+                const isSaving = saving[mk];
+
+                return (
+                  <div key={mk} className={`bg-white rounded-xl overflow-hidden border-2 transition ${
+                    app?.status === "approved" ? "border-emerald-300" :
+                    app?.status === "changes" ? "border-amber-300" : "border-stone-200"
+                  }`} data-testid={`review-msg-${mk}`}>
+                    <div className="px-4 py-2 bg-stone-50 border-b border-stone-200 flex items-center justify-between gap-2">
+                      <div className="text-[11px] font-mono font-semibold">{m.id || m.dia} · {m.timing || m.hora}</div>
+                      {app?.status === "approved" && <span className="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full">✓ Aprobado por {app.by}</span>}
+                      {app?.status === "changes" && <span className="text-[10px] bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full">✎ Cambios por {app.by}</span>}
+                    </div>
+                    <div className="p-4" style={{ backgroundColor: "#ECE5DD" }}>
+                      <div className="max-w-[85%] bg-white rounded-lg rounded-tl-none px-3 py-2 shadow-sm">
+                        <div className="text-[13.5px] text-stone-800 whitespace-pre-wrap leading-[1.35]">{copy}</div>
+                      </div>
+                      {btns.length > 0 && (
+                        <div className="mt-1 space-y-0.5 max-w-[85%]">
+                          {btns.map((b, j) => <div key={j} className="bg-white rounded-lg px-3 py-2 text-center text-[13px] font-medium text-[#00A5F4] shadow-sm">{b}</div>)}
+                        </div>
+                      )}
+                    </div>
+                    <div className="px-4 py-3 border-t border-stone-200 bg-white flex items-center gap-2 flex-wrap">
+                      <button onClick={() => setApproval(mk, "approved")} disabled={isSaving}
+                        data-testid={`approve-btn-${mk}`}
+                        className={`text-xs px-3 py-1.5 rounded-md border font-medium transition ${app?.status === "approved" ? "bg-emerald-600 text-white border-emerald-600" : "bg-white border-emerald-300 text-emerald-700 hover:bg-emerald-50"} disabled:opacity-50`}>
+                        ✓ Aprobar
+                      </button>
+                      <button onClick={() => setCommentOpen(p => ({ ...p, [mk]: !p[mk] }))} disabled={isSaving}
+                        data-testid={`changes-btn-${mk}`}
+                        className={`text-xs px-3 py-1.5 rounded-md border font-medium transition ${app?.status === "changes" ? "bg-amber-600 text-white border-amber-600" : "bg-white border-amber-300 text-amber-700 hover:bg-amber-50"} disabled:opacity-50`}>
+                        ✎ Pedir cambios
+                      </button>
+                      {app && <button onClick={() => setApproval(mk, null)} disabled={isSaving} className="text-xs text-stone-500 hover:text-stone-900 disabled:opacity-50">Borrar estado</button>}
+                      {isSaving && <span className="text-[10px] text-stone-400">guardando…</span>}
+                    </div>
+                    {isOpen && (
+                      <div className="px-4 py-3 border-t border-stone-200 bg-stone-50">
+                        <textarea value={commentText[mk] || ""} onChange={e => setCommentText({ ...commentText, [mk]: e.target.value })}
+                          placeholder="¿Qué cambiarías? (opcional)" className="w-full p-2 text-sm border border-stone-200 rounded-md min-h-[60px]" />
+                        <div className="flex justify-end gap-2 mt-2">
+                          <button onClick={() => setCommentOpen(p => ({ ...p, [mk]: false }))} className="text-xs px-2 py-1 text-stone-500">Cancelar</button>
+                          <button onClick={() => { setApproval(mk, "changes", commentText[mk] || ""); setCommentOpen(p => ({ ...p, [mk]: false })); }}
+                            className="text-xs px-3 py-1 bg-amber-600 text-white rounded-md hover:bg-amber-700">
+                            Enviar cambios
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    {app?.comment && (
+                      <div className="px-4 py-2 bg-amber-50 border-t border-amber-200 text-[12px] text-amber-900">
+                        <strong>Nota de {app.by}:</strong> {app.comment}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+
+        <div className="text-center text-[11px] text-stone-400 py-6">
+          Powered by WAFLOW · by Fascinads
+        </div>
+      </main>
+    </div>
+  );
+}
+
+// ====================================================================
 // APP RAÍZ — gestión proyectos
 // ====================================================================
-export default function App() {
+function MainApp() {
   const [projects, setProjects] = useState([]);
   const [activeId, setActiveId] = useState(null);
   const [me, setMe] = useState("");
@@ -3208,4 +3499,13 @@ export default function App() {
       )}
     </>
   );
+}
+
+// Router manual: /review/:token → PublicReviewPage, resto → MainApp
+export default function App() {
+  const reviewMatch = typeof window !== "undefined"
+    ? window.location.pathname.match(/^\/review\/([A-Za-z0-9_-]+)\/?$/)
+    : null;
+  if (reviewMatch) return <PublicReviewPage token={reviewMatch[1]} />;
+  return <MainApp />;
 }

@@ -217,6 +217,117 @@ async def whatsapp_send(body: WhatsAppSendBody):
 
 
 # ============================================================
+# MAGIC REVIEW LINK — token público para que el cliente apruebe copys
+# Tokens viven en colección review_tokens. El cliente accede por
+# /review/:token en el frontend, que llama a estos endpoints.
+# ============================================================
+import json as _json
+import secrets
+
+PROJECTS_LIST_KEY = "wa_editor:projects_list"
+
+
+async def _read_storage(key: str):
+    doc = await db.storage_shared.find_one({"key": key}, {"_id": 0})
+    if not doc:
+        return None
+    try:
+        return _json.loads(doc["value"])
+    except Exception:
+        return None
+
+
+async def _write_storage(key: str, value: Any):
+    now = datetime.now(timezone.utc).isoformat()
+    await db.storage_shared.update_one(
+        {"key": key},
+        {"$set": {"key": key, "value": _json.dumps(value), "updated_at": now}},
+        upsert=True,
+    )
+
+
+class ReviewCreateBody(BaseModel):
+    project_id: str
+
+
+@api_router.post("/review/create")
+async def review_create(body: ReviewCreateBody):
+    # Buscar token existente
+    existing = await db.review_tokens.find_one({"project_id": body.project_id}, {"_id": 0})
+    if existing:
+        return {"token": existing["token"], "path": f"/review/{existing['token']}", "reused": True}
+    token = secrets.token_urlsafe(18)
+    await db.review_tokens.insert_one({
+        "token": token,
+        "project_id": body.project_id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"token": token, "path": f"/review/{token}", "reused": False}
+
+
+@api_router.get("/review/{token}")
+async def review_get(token: str):
+    rec = await db.review_tokens.find_one({"token": token}, {"_id": 0})
+    if not rec:
+        raise HTTPException(status_code=404, detail="Link no válido o expirado")
+    pid = rec["project_id"]
+
+    projects = await _read_storage(PROJECTS_LIST_KEY) or []
+    project = next((p for p in projects if p.get("id") == pid), None)
+    if not project:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+
+    # Sanitizar proyecto (quitar notas internas)
+    safe_project = {
+        "id": project.get("id"),
+        "name": project.get("name"),
+        "client": project.get("client"),
+        "emoji": project.get("emoji"),
+        "color": project.get("color"),
+        "strategy": project.get("strategy", "webinar"),
+    }
+
+    vars_data = await _read_storage(f"wa_editor:p:{pid}:vars") or []
+    edits_data = await _read_storage(f"wa_editor:p:{pid}:edits") or {}
+    approval_data = await _read_storage(f"wa_editor:p:{pid}:approval") or {}
+
+    return {
+        "project": safe_project,
+        "vars": vars_data,
+        "edits": edits_data,
+        "approval": approval_data,
+    }
+
+
+class ReviewApprovalBody(BaseModel):
+    msgKey: str
+    status: Optional[str] = None  # 'approved' | 'changes' | null (borrar)
+    by: Optional[str] = "Cliente"
+    comment: Optional[str] = None
+
+
+@api_router.post("/review/{token}/approve")
+async def review_approve(token: str, body: ReviewApprovalBody):
+    rec = await db.review_tokens.find_one({"token": token}, {"_id": 0})
+    if not rec:
+        raise HTTPException(status_code=404, detail="Link no válido")
+    pid = rec["project_id"]
+    key = f"wa_editor:p:{pid}:approval"
+    approval = await _read_storage(key) or {}
+
+    if body.status is None:
+        approval.pop(body.msgKey, None)
+    else:
+        entry = {"status": body.status, "by": body.by or "Cliente", "at": int(datetime.now(timezone.utc).timestamp() * 1000)}
+        if body.comment:
+            entry["comment"] = body.comment
+        approval[body.msgKey] = entry
+
+    await _write_storage(key, approval)
+    return {"ok": True, "approval": approval.get(body.msgKey)}
+
+
+# ============================================================
 # ROOT
 # ============================================================
 @api_router.get("/")
