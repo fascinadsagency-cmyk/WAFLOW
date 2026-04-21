@@ -117,9 +117,26 @@ Editor colaborativo multi-proyecto de secuencias de mensajes de WhatsApp para ag
 - **ConnectionsPanel**: nuevo campo "Webhook deploy (🚀 Lanzar ahora)" (`n8nDeployWebhookUrl`)
 - **createSnapshot** ahora devuelve el ID del snapshot creado (necesario para pasarlo al wizard)
 
+### Iter 8 (21 feb 2026) — Code Review Refactor (3 fases)
+- **Fase 1 — Fixes seguros**:
+  - `storage-shim.js:72` catch vacío → `console.warn("localStorage delete failed", e)`
+  - 20 array-index keys reemplazados por compound keys estables (`btn-${i}-${b}`, `edge-${e.from}-${e.to}-${i}`, `line-${n.id}-${i}`, `chatmsg-${i}-${m.role}`, `chk-${c.type}-${i}-${c.flowKey}-${c.msgKey}`, etc.)
+  - `is True`/`is False`/`is None` en tests validados como PEP8-correct (ruff lo confirma) — falso positivo del reporte, no cambiar
+- **Fase 2 — Backend complexity + Hook deps**:
+  - `test_connection()` (52 líneas, complejidad 19) extraído en 3 async helpers: `_test_meta_connection`, `_test_evolution_connection`, `_test_n8n_connection` — router con dict `handlers`, complejidad del endpoint cae a <5
+  - `review_summary_pdf()` (137 líneas, complejidad 29, 34 locals) extraído en 5 helpers: `_pdf_styles`, `_pdf_header`, `_pdf_stats_table`, `_pdf_messages_section`, `_pdf_signature_section` — endpoint reducido a 30 líneas
+  - 18 warnings de `react-hooks/exhaustive-deps` eliminados: `fetchEvents` → `useCallback` en MonitoringPanel; 14 `useEffect` de persist añaden `debouncedSave` a deps; `API` envuelto en `useMemo` en PublicReviewPage; `failed.length` inline dentro del useMemo de stats
+- **Fase 3 — Refactor arquitectural (nuevos archivos)**:
+  - `src/hooks/useConfirm.jsx` — `ConfirmProvider` + `useConfirm` hook + `ConfirmDialog` (z-[70]) extraídos. MainApp migrado de `setConfirmDialog` local a `askConfirm()` hook (handleDelete)
+  - `src/pages/PublicReviewPage.jsx` — 280 líneas, dividido en 7 sub-componentes: `ReviewHeader`, `ReviewerNameCard`, `ProgressCard`, `SignatureCard`, `SignCtaCard`, `ReviewMessageCard`, `PublicReviewPage` (main)
+  - `src/waflow-utils.js` — utilidades compartidas (`getFlowsForStrategy`, `replaceVars`, `parseButtons`) para evitar ciclos de imports entre App.jsx y PublicReviewPage.jsx
+- **App.jsx**: 5211 → 4851 líneas (-360)
+- **Testing iter 8**: 19/19 backend PASS + Frontend 100% (useConfirm end-to-end, PublicReviewPage extraída renderiza 73 msgs + PDF descargable, smoke tabs Salud + Prompt IA + Conexiones)
+
 ## Testing
 - Iter 6: **13/13 backend** (8 nuevos launch + 5 regresión) + **~85% frontend** end-to-end ✅
 - Iter 7 (21 feb 2026): **13/13 backend** (7 test-connection + 3 smoke + 2 launch + 1 review) + **~95% frontend** ✅
+- Iter 8 (21 feb 2026): **19/19 backend** (sin regresiones) + **100% frontend** (6/6 flujos testeados) ✅
 
 ### Iter 7 (21 feb 2026) — Validación beta interna
 - **useConfirm global** (ConfirmProvider + ConfirmDialog z-[70] + hook `useConfirm()`) montado en `<App>` para reemplazar `window.confirm` (bloqueado en iframe Emergent)
@@ -173,14 +190,15 @@ Editor colaborativo multi-proyecto de secuencias de mensajes de WhatsApp para ag
 - `MonitoringPanel`: LIVE cuando n8n envíe events reales, MOCK mientras tanto (fallback automático).
 
 ## Next Action Items
-- **P1** Migrar `stopLaunch` de window.confirm → `useConfirm()` (aunque stopLaunch actual no usa confirm, añadir confirmación custom sería coherente con UX)
+- **P1** Continuar refactor arquitectural de App.jsx (4851 líneas aún): extraer `ConnectionsPanel` (~200 líneas), `AutopilotPanel`+`LaunchWizard` (~500), `MessageCard` (~411, complejidad 107 según reporte), `ProjectWorkspace` (~480). Objetivo: <3000 líneas en App.jsx.
+- **P1** Añadir `data-testid="delete-project-${id}"` al botón Trash2 de ProjectsDashboard (App.jsx:1405) — reportado por testing agent, facilitará QA automatizado sin depender del hover.
 - **P1** Añadir botón "Enviar via Meta template" en MessageCard para flujos no-broadcast (usar TemplateMeta.name + /api/whatsapp/send)
-- **P1** Configurar tus workflows n8n reales para que envíen events a `POST /api/events` → Monitor en LIVE
-- **P2** Refactorizar `App.jsx` (5196 líneas): extraer `ConnectionsPanel`, `AutopilotPanel`, `LaunchWizard`, `MessageCard`, `AIPromptPanel`, `ConfirmProvider/Dialog` a archivos separados en `src/panels/` y `src/hooks/`
-- **P2** Mostrar todas las AddBars+badges de flujos incluso cuando están colapsados
+- **P1** Conectar tus workflows n8n reales a `POST /api/events` → Monitor LIVE
+- **P1** Documentar en UI (help text junto a "Probar conexión n8n") que el webhook de prueba lleva header `X-WAFLOW-Test: 1` y el cliente debe filtrarlo en su flow de producción.
 - **P2** Crear flujos desde cero (hoy solo se añaden mensajes a las 6 plantillas)
 - **P2** Historial empty state con copy explicativo cuando 0 snapshots
 - **P2** Multi-tenant auth (Login/Register) — pendiente tras validación beta
+- **P2** Tests unitarios React Testing Library para sub-componentes de PublicReviewPage (ReviewHeader, ReviewerNameCard, etc.) y useConfirm hook
 - **P3** Rate-limiting en /api/review/* y /api/evolution/send
 - **P3** Fix hash `/sign` para que mismo contenido firmado dos veces no dé mismo hash (separar content_hash de signed_at)
 - **P3** Persistencia `waflow_me` entre sesiones (confirmar que el shim guarda en backend y no solo memory)
