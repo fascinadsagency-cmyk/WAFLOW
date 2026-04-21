@@ -1911,6 +1911,359 @@ function ConnectionsPanel({ conn, setConn, projectName, notifyConfig, setNotifyC
   );
 }
 
+
+// ====================================================================
+// AUTOPILOT PANEL — timeline de lanzamiento + pre-flight checklist + acciones
+// ====================================================================
+function AutopilotPanel({
+  project, vars, edits, creatives, connections, notifyConfig, templatesByMsg,
+  approvalByMsg, snapshots, flows, onCreateSnapshot, onFreezeToggle, onGoToTab,
+}) {
+  const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
+  const [reviewSignature, setReviewSignature] = useState(null);
+  const [generatingWf, setGeneratingWf] = useState(false);
+
+  // Fetch review signature state
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await fetch(`${API}/review/create`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ project_id: project.id }),
+        });
+        const j = await r.json();
+        if (j.token) {
+          const r2 = await fetch(`${API}/review/${j.token}`);
+          const d = await r2.json();
+          setReviewSignature({ token: j.token, locked: d.locked, signature: d.signature });
+        }
+      } catch {}
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project.id]);
+
+  // Pre-flight checklist — cálculos en tiempo real
+  const editableVars = vars.filter(v => v.editable !== false);
+  const varsFilled = editableVars.filter(v => (v.value || "").trim() !== "");
+  const varsPct = editableVars.length > 0 ? Math.round((varsFilled.length / editableVars.length) * 100) : 100;
+
+  const totalMsgs = flows.reduce((s, f) => s + f.items.length, 0);
+  const approvedMsgs = Object.values(approvalByMsg || {}).filter(a => a?.status === "approved").length;
+  const approvalPct = totalMsgs > 0 ? Math.round((approvedMsgs / totalMsgs) * 100) : 0;
+
+  const templatedMsgs = Object.values(templatesByMsg || {}).filter(t => t && t.name).length;
+  const nonEvoFlowMsgs = flows.filter(f => f.key !== "broadcasts" && f.key !== "venta_comunidad").reduce((s, f) => s + f.items.length, 0);
+
+  const hasMeta = !!(connections.phoneNumberId && connections.accessToken);
+  const hasN8n = !!connections.n8nWebhookUrl;
+  const hasEvo = !!(connections.evolution?.server_url && connections.evolution?.api_key && connections.evolution?.instance);
+  const needsEvo = flows.some(f => (f.key === "broadcasts" || f.key === "venta_comunidad") && f.items.length > 0);
+
+  const msgsWithCreative = new Set(creatives.filter(c => c.messageKey).map(c => c.messageKey));
+  const keyMsgs = flows.flatMap(f => f.items.slice(0, 2).map(m => `${f.key}:${m.id}`)); // primeros 2 mensajes de cada flujo
+  const creativesKeyPct = keyMsgs.length > 0 ? Math.round((keyMsgs.filter(k => msgsWithCreative.has(k)).length / keyMsgs.length) * 100) : 100;
+
+  const checklist = [
+    { key: "vars", label: "Variables rellenas", status: varsPct === 100 ? "ok" : varsPct >= 70 ? "warn" : "fail", detail: `${varsFilled.length}/${editableVars.length} (${varsPct}%)`, goTab: "flows" },
+    { key: "approval", label: "Aprobación del cliente", status: reviewSignature?.locked ? "ok" : approvalPct >= 80 ? "warn" : "fail", detail: reviewSignature?.locked ? `🔐 Firmado por ${reviewSignature.signature?.signer_name}` : `${approvedMsgs}/${totalMsgs} aprobados (${approvalPct}%)`, goTab: "client" },
+    { key: "templates", label: "Plantillas Meta marcadas", status: templatedMsgs >= Math.min(nonEvoFlowMsgs, 3) ? "ok" : templatedMsgs > 0 ? "warn" : "fail", detail: `${templatedMsgs} mensajes con template`, goTab: "flows" },
+    { key: "meta", label: "Meta Cloud API configurada", status: hasMeta ? "ok" : "fail", detail: hasMeta ? "Phone ID + Access Token presentes" : "Falta Phone ID o Access Token", goTab: "connections" },
+    { key: "n8n", label: "n8n webhook configurado", status: hasN8n ? "ok" : "warn", detail: hasN8n ? "Webhook URL presente" : "Sin webhook URL", goTab: "connections" },
+    ...(needsEvo ? [{ key: "evo", label: "Evolution API (broadcasts / comunidad)", status: hasEvo ? "ok" : "fail", detail: hasEvo ? `Instancia ${connections.evolution.instance}` : "Falta configurar", goTab: "connections" }] : []),
+    { key: "creatives", label: "Creativos en mensajes clave", status: creativesKeyPct === 100 ? "ok" : creativesKeyPct >= 60 ? "warn" : "fail", detail: `${creativesKeyPct}% de los primeros de cada flujo`, goTab: "creatives" },
+    { key: "notify", label: "Notificaciones Slack/Discord", status: (notifyConfig?.slack_url || notifyConfig?.discord_url) ? "ok" : "warn", detail: (notifyConfig?.slack_url || notifyConfig?.discord_url) ? "Configurado" : "Opcional (no configurado)", goTab: "connections" },
+  ];
+
+  const okCount = checklist.filter(c => c.status === "ok").length;
+  const failCount = checklist.filter(c => c.status === "fail").length;
+  const readyPct = Math.round((okCount / checklist.length) * 100);
+
+  // Fases del lanzamiento con su estado
+  const PHASES = [
+    { key: "setup", label: "1. Setup", desc: "Variables + conexiones", icon: "⚙️", done: varsPct === 100 && hasMeta, active: varsPct < 100 || !hasMeta },
+    { key: "copies", label: "2. Copies & Review", desc: "Crear + revisar mensajes", icon: "✍️", done: reviewSignature?.locked, active: !reviewSignature?.locked && approvalPct < 100 },
+    { key: "creatives", label: "3. Creativos", desc: "Adjuntar material visual", icon: "🎨", done: creativesKeyPct === 100, active: creativesKeyPct < 100 && reviewSignature?.locked },
+    { key: "deploy", label: "4. Deploy n8n", desc: "Exportar y activar workflows", icon: "🚀", done: false, active: reviewSignature?.locked && creativesKeyPct === 100 },
+    { key: "launch", label: "5. Lanzamiento", desc: "Captación activa + monitoreo", icon: "📡", done: false, active: false },
+  ];
+
+  // Generar workflow n8n exportable
+  const generateN8nWorkflow = () => {
+    setGeneratingWf(true);
+    try {
+      const nodes = [
+        {
+          parameters: { httpMethod: "POST", path: `waflow-${project.id.slice(-8)}`, responseMode: "onReceived" },
+          id: "n_webhook", name: "Webhook entrada lead", type: "n8n-nodes-base.webhook",
+          typeVersion: 1, position: [240, 300],
+        },
+        {
+          parameters: { jsCode: `// Normalizar lead\nconst data = $input.first().json;\nreturn [{ json: { phone: data.phone || data.telefono || data['WhatsApp'], name: data.name || data.nombre || data.email?.split('@')[0] || 'amig@', email: data.email, user_id: data.user_id || data.email, ...data } }];` },
+          id: "n_normalize", name: "Normalizar datos", type: "n8n-nodes-base.code",
+          typeVersion: 2, position: [460, 300],
+        },
+      ];
+      const connectionsMap = {
+        "Webhook entrada lead": { main: [[{ node: "Normalizar datos", type: "main", index: 0 }]] },
+      };
+
+      let x = 680;
+      flows.forEach((f, fi) => {
+        const sectionNodeName = `${f.label} — inicio`;
+        nodes.push({
+          parameters: { unit: "seconds", amount: 1 },
+          id: `n_wait_${f.key}`, name: sectionNodeName, type: "n8n-nodes-base.wait",
+          typeVersion: 1, position: [x, 300 + fi * 40],
+        });
+        const prevNode = fi === 0 ? "Normalizar datos" : `${flows[fi - 1].label} — inicio`;
+        if (!connectionsMap[prevNode]) connectionsMap[prevNode] = { main: [[]] };
+        connectionsMap[prevNode].main[0].push({ node: sectionNodeName, type: "main", index: 0 });
+
+        let prev = sectionNodeName;
+        f.items.forEach((m, mi) => {
+          const mk = `${f.key}:${m.id}`;
+          const copy = replaceVars(edits[mk] ?? m.copy, vars);
+          const tpl = templatesByMsg[mk];
+          const useEvo = f.key === "broadcasts" || f.key === "venta_comunidad";
+          const isApproved = approvalByMsg[mk]?.status === "approved";
+          const nodeName = `${m.id || `msg_${mi}`}${m._custom ? " ✨" : ""}`;
+
+          const sendNode = useEvo ? {
+            parameters: {
+              url: "={{ $env.EVOLUTION_URL }}/message/sendText/={{ $env.EVOLUTION_INSTANCE }}",
+              method: "POST",
+              sendHeaders: true,
+              headerParameters: { parameters: [{ name: "apikey", value: "={{ $env.EVOLUTION_API_KEY }}" }] },
+              sendBody: true,
+              bodyParameters: { parameters: [
+                { name: "number", value: "={{ $json.phone }}" },
+                { name: "text", value: copy },
+              ]},
+            },
+            type: "n8n-nodes-base.httpRequest",
+          } : {
+            parameters: {
+              url: `=https://graph.facebook.com/v21.0/{{ $env.PHONE_NUMBER_ID }}/messages`,
+              method: "POST",
+              sendHeaders: true,
+              headerParameters: { parameters: [{ name: "Authorization", value: "=Bearer {{ $env.WA_ACCESS_TOKEN }}" }] },
+              sendBody: true,
+              jsonBody: JSON.stringify({
+                messaging_product: "whatsapp",
+                to: "={{ $json.phone }}",
+                type: tpl?.name ? "template" : "text",
+                ...(tpl?.name
+                  ? { template: { name: tpl.name, language: { code: tpl.language || "es" } } }
+                  : { text: { body: copy } }),
+              }),
+            },
+            type: "n8n-nodes-base.httpRequest",
+          };
+
+          nodes.push({
+            id: `n_${mk}`, name: nodeName, typeVersion: 4,
+            position: [x + 220 + mi * 220, 300 + fi * 40 + (mi % 2) * 60],
+            ...sendNode,
+            notes: `${useEvo ? "🚀 Evolution" : "📋 Meta"} · ${isApproved ? "✓ aprobado" : "⚠ pendiente"}${m._custom ? " · ✨ CUSTOM" : ""}${tpl?.name ? ` · template:${tpl.name}` : ""}`,
+          });
+          if (!connectionsMap[prev]) connectionsMap[prev] = { main: [[]] };
+          connectionsMap[prev].main[0].push({ node: nodeName, type: "main", index: 0 });
+          prev = nodeName;
+        });
+        x += 200 + f.items.length * 220;
+      });
+
+      const workflow = {
+        name: `WAFLOW · ${project.name}`,
+        active: false,
+        nodes,
+        connections: connectionsMap,
+        settings: { executionOrder: "v1" },
+        meta: {
+          project_id: project.id,
+          project_name: project.name,
+          strategy: project.strategy,
+          generated_at: new Date().toISOString(),
+          generated_by: "WAFLOW Autopilot",
+          notes: "Este workflow es un punto de partida. Ajusta los Wait nodes con los delays reales de cada mensaje, añade las ramas conditionales si usas A/B, y define las variables de entorno: EVOLUTION_URL, EVOLUTION_INSTANCE, EVOLUTION_API_KEY, PHONE_NUMBER_ID, WA_ACCESS_TOKEN.",
+        },
+      };
+      const blob = new Blob([JSON.stringify(workflow, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `waflow_n8n_${project.name.replace(/\W+/g, "_")}_${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } finally {
+      setGeneratingWf(false);
+    }
+  };
+
+  const statusPill = (s) => {
+    if (s === "ok") return <span className="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full font-semibold">✓ OK</span>;
+    if (s === "warn") return <span className="text-[10px] bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full font-semibold">⚠ AVISO</span>;
+    return <span className="text-[10px] bg-red-100 text-red-800 px-2 py-0.5 rounded-full font-semibold">✗ FALTA</span>;
+  };
+  const isFrozen = project.status === "frozen";
+
+  return (
+    <div className="space-y-5 max-w-5xl">
+      {/* Header con estado general */}
+      <div className={`rounded-xl p-6 text-white ${isFrozen ? "bg-gradient-to-br from-slate-700 to-slate-900" : readyPct === 100 ? "bg-gradient-to-br from-emerald-600 to-emerald-800" : "bg-gradient-to-br from-indigo-600 to-violet-800"}`}>
+        <div className="flex items-center justify-between mb-2">
+          <div>
+            <div className="text-[11px] uppercase tracking-widest opacity-75">Autopilot del lanzamiento</div>
+            <div className="text-2xl font-bold mt-1">{isFrozen ? "🔒 Proyecto congelado" : `${readyPct}% listo para lanzar`}</div>
+          </div>
+          <div className="text-right text-[11px] opacity-90">
+            <div>{okCount}/{checklist.length} checks OK</div>
+            {failCount > 0 && <div className="text-amber-200">{failCount} bloqueantes</div>}
+          </div>
+        </div>
+        <div className="bg-white/20 rounded-full h-2 mt-3">
+          <div className="h-full bg-white rounded-full transition-all" style={{ width: `${readyPct}%` }} />
+        </div>
+      </div>
+
+      {/* Timeline de fases */}
+      <div className="bg-white border border-stone-200 rounded-xl p-5">
+        <div className="text-[11px] font-semibold tracking-widest text-stone-500 uppercase mb-4">Timeline de lanzamiento</div>
+        <div className="flex items-stretch gap-0 overflow-x-auto">
+          {PHASES.map((p, i) => (
+            <React.Fragment key={p.key}>
+              <div className={`flex-1 min-w-[150px] rounded-lg p-3 border-2 ${p.done ? "bg-emerald-50 border-emerald-300" : p.active ? "bg-indigo-50 border-indigo-300" : "bg-stone-50 border-stone-200"}`}>
+                <div className="text-2xl mb-1">{p.done ? "✅" : p.active ? p.icon : "⏸️"}</div>
+                <div className={`text-xs font-bold ${p.done ? "text-emerald-800" : p.active ? "text-indigo-800" : "text-stone-500"}`}>{p.label}</div>
+                <div className="text-[10px] text-stone-600 mt-0.5 leading-tight">{p.desc}</div>
+              </div>
+              {i < PHASES.length - 1 && <div className="flex items-center text-stone-300 text-xl px-1">→</div>}
+            </React.Fragment>
+          ))}
+        </div>
+      </div>
+
+      {/* Pre-flight checklist */}
+      <div className="bg-white border border-stone-200 rounded-xl p-5">
+        <div className="flex items-center justify-between mb-4">
+          <div className="text-[11px] font-semibold tracking-widest text-stone-500 uppercase">Pre-flight checklist</div>
+          <div className="text-[10px] text-stone-500">Click en cualquier item para ir al apartado</div>
+        </div>
+        <div className="space-y-1.5">
+          {checklist.map(c => (
+            <button key={c.key} onClick={() => onGoToTab && onGoToTab(c.goTab)}
+              data-testid={`autopilot-check-${c.key}`}
+              className={`w-full flex items-center gap-3 p-3 rounded-md border text-left transition hover:shadow-sm ${
+                c.status === "ok" ? "bg-emerald-50/40 border-emerald-200 hover:border-emerald-400"
+                : c.status === "warn" ? "bg-amber-50/40 border-amber-200 hover:border-amber-400"
+                : "bg-red-50/40 border-red-200 hover:border-red-400"
+              }`}>
+              <div className="text-xl">{c.status === "ok" ? "✓" : c.status === "warn" ? "⚠" : "✗"}</div>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-semibold text-stone-900">{c.label}</div>
+                <div className="text-[11px] text-stone-600 truncate">{c.detail}</div>
+              </div>
+              {statusPill(c.status)}
+              <ChevronRight size={14} className="text-stone-400" />
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Acciones */}
+      <div className="bg-white border border-stone-200 rounded-xl p-5">
+        <div className="text-[11px] font-semibold tracking-widest text-stone-500 uppercase mb-4">Acciones</div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <button onClick={generateN8nWorkflow} disabled={generatingWf}
+            data-testid="autopilot-export-n8n"
+            className="flex items-center gap-3 p-4 bg-gradient-to-br from-purple-50 to-indigo-50 border-2 border-purple-200 rounded-lg hover:border-purple-400 text-left disabled:opacity-50">
+            <div className="text-2xl">🚀</div>
+            <div className="flex-1">
+              <div className="text-sm font-bold text-purple-900">{generatingWf ? "Generando..." : "Exportar workflow n8n"}</div>
+              <div className="text-[11px] text-purple-700">JSON importable en n8n con todos los flujos, templates Meta y nodos Evolution para broadcasts</div>
+            </div>
+            <Download size={16} className="text-purple-600" />
+          </button>
+
+          <button onClick={onCreateSnapshot}
+            data-testid="autopilot-snapshot"
+            className="flex items-center gap-3 p-4 bg-gradient-to-br from-sky-50 to-cyan-50 border-2 border-sky-200 rounded-lg hover:border-sky-400 text-left">
+            <div className="text-2xl">📸</div>
+            <div className="flex-1">
+              <div className="text-sm font-bold text-sky-900">Crear snapshot de versión</div>
+              <div className="text-[11px] text-sky-700">Guardar el estado actual como versión restaurable</div>
+            </div>
+            <GitCommit size={16} className="text-sky-600" />
+          </button>
+
+          {reviewSignature?.token && (
+            <a href={`${window.location.origin}/review/${reviewSignature.token}`} target="_blank" rel="noreferrer"
+              data-testid="autopilot-open-review"
+              className="flex items-center gap-3 p-4 bg-gradient-to-br from-emerald-50 to-teal-50 border-2 border-emerald-200 rounded-lg hover:border-emerald-400 text-left">
+              <div className="text-2xl">🔗</div>
+              <div className="flex-1">
+                <div className="text-sm font-bold text-emerald-900">Abrir link mágico cliente</div>
+                <div className="text-[11px] text-emerald-700">{reviewSignature.locked ? "🔐 Firmado — modo lectura" : "Enviar al cliente para aprobación"}</div>
+              </div>
+              <ExternalLink size={16} className="text-emerald-600" />
+            </a>
+          )}
+
+          {reviewSignature?.token && (
+            <a href={`${API}/review/${reviewSignature.token}/summary.pdf`} target="_blank" rel="noreferrer"
+              data-testid="autopilot-pdf"
+              className="flex items-center gap-3 p-4 bg-gradient-to-br from-amber-50 to-orange-50 border-2 border-amber-200 rounded-lg hover:border-amber-400 text-left">
+              <div className="text-2xl">📄</div>
+              <div className="flex-1">
+                <div className="text-sm font-bold text-amber-900">Descargar PDF resumen</div>
+                <div className="text-[11px] text-amber-700">Incluye firma digital si el link está cerrado</div>
+              </div>
+              <Download size={16} className="text-amber-600" />
+            </a>
+          )}
+
+          <button onClick={onFreezeToggle}
+            data-testid="autopilot-freeze"
+            className={`flex items-center gap-3 p-4 rounded-lg border-2 text-left transition ${
+              isFrozen ? "bg-gradient-to-br from-slate-50 to-gray-50 border-slate-300 hover:border-slate-500"
+                       : "bg-gradient-to-br from-red-50 to-rose-50 border-red-200 hover:border-red-400"
+            }`}>
+            <div className="text-2xl">{isFrozen ? "🔓" : "🔒"}</div>
+            <div className="flex-1">
+              <div className={`text-sm font-bold ${isFrozen ? "text-slate-900" : "text-red-900"}`}>
+                {isFrozen ? "Descongelar proyecto" : "Congelar proyecto"}
+              </div>
+              <div className={`text-[11px] ${isFrozen ? "text-slate-600" : "text-red-700"}`}>
+                {isFrozen ? "Permitir edición de mensajes, variables y estructura" : "Read-only: nadie del equipo podrá editar copies, vars, ni estructura"}
+              </div>
+            </div>
+          </button>
+        </div>
+      </div>
+
+      {/* Snapshots recientes */}
+      {snapshots?.length > 0 && (
+        <div className="bg-white border border-stone-200 rounded-xl p-5">
+          <div className="text-[11px] font-semibold tracking-widest text-stone-500 uppercase mb-3">Últimos snapshots</div>
+          <div className="space-y-1.5">
+            {snapshots.slice(0, 3).map(s => (
+              <div key={s.id} className="flex items-center gap-2 p-2 rounded border border-stone-200 bg-stone-50">
+                <GitCommit size={12} className="text-stone-500" />
+                <div className="flex-1 min-w-0">
+                  <div className="text-[12px] font-medium text-stone-900 truncate">{s.label || "Sin etiqueta"}</div>
+                  <div className="text-[10px] text-stone-500">{s.author || "—"} · {s.created_at ? new Date(s.created_at).toLocaleString("es-ES") : "—"}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 // ====================================================================
 // PROMPT IA
 // ====================================================================
@@ -3557,7 +3910,7 @@ function HistoryPanel({ history }) {
 // ====================================================================
 // PROJECT WORKSPACE — todo el editor de un proyecto
 // ====================================================================
-function ProjectWorkspace({ project, onBack, me }) {
+function ProjectWorkspace({ project, onBack, me, onUpdateProject }) {
   const strat = STRATEGY_TEMPLATES[project.strategy];
   // customMsgs: mensajes añadidos manualmente por el usuario (desde Mapa o Flujos)
   // Estructura: { [flowKey]: [{id, dia, timing, hora, objetivo, copy, botones, position}] }
@@ -3862,6 +4215,7 @@ function ProjectWorkspace({ project, onBack, me }) {
   const saveLabel = saveStatus === "offline" ? "Sin sincronizar" : saveStatus === "saving" ? "Guardando…" : "Guardado";
 
   const TABS = [
+    { key: "autopilot", label: "Autopilot", icon: Zap },
     { key: "flows", label: "Flujos", icon: MessageCircle },
     { key: "mindmap", label: "Mapa", icon: Map },
     { key: "calendar", label: "Calendario", icon: CalIcon },
@@ -3890,7 +4244,7 @@ function ProjectWorkspace({ project, onBack, me }) {
               <div className="h-6 w-px bg-stone-200" />
               <div className="w-8 h-8 rounded-lg flex items-center justify-center text-lg" style={{ backgroundColor: project.color + "22", border: `2px solid ${project.color}` }}>{project.emoji}</div>
               <div className="min-w-0">
-                <div className="text-sm font-bold tracking-tight text-stone-900 truncate">{project.name}</div>
+                <div className="text-sm font-bold tracking-tight text-stone-900 truncate">{project.name}{project.status === "frozen" && <span className="ml-2 text-[10px] bg-slate-800 text-white px-2 py-0.5 rounded font-semibold uppercase tracking-widest">🔒 Congelado</span>}</div>
                 <div className="text-[10px] text-stone-500 truncate">{project.client || "Sin cliente"} · {strat?.emoji} {strat?.label}</div>
               </div>
             </div>
@@ -3922,6 +4276,32 @@ function ProjectWorkspace({ project, onBack, me }) {
       </header>
 
       <div className="max-w-[1600px] mx-auto flex">
+        {activeTab === "autopilot" && (
+          <main className="flex-1 min-w-0 px-8 py-8">
+            <AutopilotPanel
+              project={project}
+              vars={vars}
+              edits={edits}
+              creatives={creatives}
+              connections={connections}
+              notifyConfig={notifyConfig}
+              templatesByMsg={templatesByMsg}
+              approvalByMsg={approvalByMsg}
+              snapshots={snapshots}
+              flows={FLOWS}
+              onCreateSnapshot={() => {
+                const label = prompt("Etiqueta del snapshot:", `Autopilot · ${new Date().toLocaleDateString("es-ES")}`);
+                if (label) createSnapshot(label);
+              }}
+              onFreezeToggle={() => {
+                const newStatus = project.status === "frozen" ? "active" : "frozen";
+                onUpdateProject && onUpdateProject(project.id, { status: newStatus });
+                logHistory(newStatus === "frozen" ? "congeló proyecto" : "descongeló proyecto", "");
+              }}
+              onGoToTab={(tab) => setActiveTab(tab)}
+            />
+          </main>
+        )}
         {activeTab === "flows" && (
           <>
             <aside className="w-80 shrink-0 border-r border-stone-200 bg-white min-h-[calc(100vh-105px)]">
@@ -4387,6 +4767,9 @@ function MainApp() {
   const handleArchive = (p) => {
     setProjects(ps => ps.map(x => x.id === p.id ? { ...x, status: x.status === "archived" ? "active" : "archived", updated_at: Date.now() } : x));
   };
+  const handleUpdateProject = (id, patch) => {
+    setProjects(ps => ps.map(x => x.id === id ? { ...x, ...patch, updated_at: Date.now() } : x));
+  };
   const handleDelete = async (p) => {
     setConfirmDialog({
       title: `Eliminar "${p.name}"`,
@@ -4408,7 +4791,7 @@ function MainApp() {
   return (
     <>
       {activeProject ? (
-        <ProjectWorkspace project={activeProject} onBack={() => setActiveId(null)} me={me} />
+        <ProjectWorkspace project={activeProject} onBack={() => setActiveId(null)} me={me} onUpdateProject={handleUpdateProject} />
       ) : (
         <ProjectsDashboard
           projects={projects}
