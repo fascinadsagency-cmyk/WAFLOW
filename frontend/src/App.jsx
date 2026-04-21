@@ -3775,6 +3775,33 @@ function PublicReviewPage({ token }) {
 }
 
 // ====================================================================
+// CONFIRM DIALOG — reemplaza window.confirm (bloqueado en iframes)
+// ====================================================================
+function ConfirmDialog({ open, title, message, confirmLabel = "Confirmar", cancelLabel = "Cancelar", danger = false, onConfirm, onCancel }) {
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 bg-black/60 z-[60] flex items-center justify-center p-4" onClick={onCancel}>
+      <div className="bg-white rounded-xl shadow-2xl max-w-md w-full overflow-hidden" onClick={e => e.stopPropagation()}>
+        <div className="p-6">
+          <div className={`text-lg font-bold ${danger ? "text-red-700" : "text-stone-900"} mb-2`}>{title}</div>
+          <div className="text-sm text-stone-600 whitespace-pre-line">{message}</div>
+        </div>
+        <div className="px-6 py-3 bg-stone-50 border-t border-stone-200 flex justify-end gap-2">
+          <button onClick={onCancel} data-testid="confirm-dialog-cancel"
+            className="px-4 py-2 text-sm font-medium text-stone-700 hover:text-stone-900">
+            {cancelLabel}
+          </button>
+          <button onClick={onConfirm} data-testid="confirm-dialog-ok"
+            className={`px-4 py-2 text-sm font-medium rounded-md text-white ${danger ? "bg-red-600 hover:bg-red-700" : "bg-stone-900 hover:bg-stone-700"}`}>
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ====================================================================
 // APP RAÍZ — gestión proyectos
 // ====================================================================
 function MainApp() {
@@ -3784,6 +3811,7 @@ function MainApp() {
   const [showProjectDialog, setShowProjectDialog] = useState(null); // { isNew, project }
   const [showMeDialog, setShowMeDialog] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [confirmDialog, setConfirmDialog] = useState(null); // {title,message,confirmLabel,danger,onConfirm}
 
   useEffect(() => {
     (async () => {
@@ -3826,11 +3854,19 @@ function MainApp() {
     setProjects(ps => ps.map(x => x.id === p.id ? { ...x, status: x.status === "archived" ? "active" : "archived", updated_at: Date.now() } : x));
   };
   const handleDelete = async (p) => {
-    if (!confirm(`¿Eliminar "${p.name}" definitivamente? Todos sus datos se perderán.`)) return;
-    const keys = ["vars", "edits", "creatives", "connections", "aiPrompt", "comments", "variants", "approval", "templates", "snapshots", "history"];
-    for (const k of keys) await deleteFromStorage(pk(p.id, k));
-    setProjects(ps => ps.filter(x => x.id !== p.id));
-    if (activeId === p.id) setActiveId(null);
+    setConfirmDialog({
+      title: `Eliminar "${p.name}"`,
+      message: `¿Seguro que quieres eliminar este proyecto DEFINITIVAMENTE?\n\nTodos sus datos (variables, ediciones, creativos, conexiones, aprobaciones, snapshots, historial) se perderán y no se puede deshacer.`,
+      confirmLabel: "Eliminar definitivamente",
+      danger: true,
+      onConfirm: async () => {
+        setConfirmDialog(null);
+        const keys = ["vars", "edits", "creatives", "connections", "notify_config", "aiPrompt", "comments", "variants", "approval", "templates", "snapshots", "history", "captacion"];
+        for (const k of keys) await deleteFromStorage(pk(p.id, k));
+        setProjects(ps => ps.filter(x => x.id !== p.id));
+        if (activeId === p.id) setActiveId(null);
+      },
+    });
   };
 
   if (!loaded) return <div className="min-h-screen flex items-center justify-center bg-stone-50 text-stone-500 text-sm">Cargando...</div>;
@@ -3865,6 +3901,15 @@ function MainApp() {
       {showMeDialog && (
         <MeDialog me={me} onSave={n => { setMe(n); setShowMeDialog(false); }} onClose={() => setShowMeDialog(false)} />
       )}
+      <ConfirmDialog
+        open={!!confirmDialog}
+        title={confirmDialog?.title}
+        message={confirmDialog?.message}
+        confirmLabel={confirmDialog?.confirmLabel}
+        danger={confirmDialog?.danger}
+        onConfirm={confirmDialog?.onConfirm}
+        onCancel={() => setConfirmDialog(null)}
+      />
     </>
   );
 }
