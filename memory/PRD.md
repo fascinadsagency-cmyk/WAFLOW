@@ -68,24 +68,51 @@ Editor colaborativo multi-proyecto de secuencias de mensajes de WhatsApp para ag
   - Cada variable muestra su descripción (valor actual o hint de runtime)
   - Panel lateral Variables: bloque informativo explicando por qué hay variables 🔒 bloqueadas (técnicas/tracking) + tooltip en cada botón de candado
 
+### Iter 4 (21 ene 2026) — Evolution API, mensajes custom desde Mapa, firma 100%, Monitor real, AI chat, bug delete
+- **🐛 Bug crítico resuelto**: eliminar proyectos no funcionaba porque `window.confirm()` está bloqueado en el iframe del preview de Emergent. Reemplazado por `ConfirmDialog` custom con modal rojo "Eliminar definitivamente".
+- **Evolution API** (self-hosted) integrada para envíos a comunidades/grupos:
+  - Backend: `POST /api/evolution/send` relay con `{server_url, api_key, instance, to, message, delay_ms}`
+  - UI: nueva sección "🚀 Evolution API" en ConnectionsPanel
+  - Visibilidad restringida: botón "Enviar ahora" + badge "🚀 Evolution API activa" **solo en flujos `broadcasts` y `venta_comunidad`**. Los demás flujos muestran badge "📋 Plantilla Meta oficial" (usar `/api/whatsapp/send` con templates aprobadas por Meta para evitar bans).
+  - `EvolutionSendModal` con toggle Grupo/Número, delay en segundos, preview del mensaje ya con variables reemplazadas.
+- **Mensajes custom desde Mapa + Flujos**:
+  - Estado `customMsgs` por flujo guardado en `wa_editor:p:{pid}:custom_msgs`
+  - FLOWS se calcula con `useMemo` mergeando template + customs (respetando `position`)
+  - Mapa: botón "+ Añadir mensaje" en cada FlowMiniMap + botones `+`/`⊕` entre mensajes para insertar en posición específica
+  - Flujos: barra gradient en el header con botón "Añadir mensaje" y contador de customs
+  - Los mensajes custom llevan badge "✨ CUSTOM" + borde purple-ring y se propagan automáticamente a Flujos, Mapa, Calendario, Checker, ClientReview, PublicReviewPage. También incluidos en `GET /api/review/{token}`.
+  - MessageCard de un custom puede eliminarse con botón 🗑️ (sin confirm nativo).
+- **Snapshot firmado al 100%** (cierra el link público):
+  - Backend: `POST /api/review/{token}/sign` con `{signer_name, signer_role}` → SHA-256 del contenido canónico + lock del token
+  - Locked tokens: `/approve` y `/sign` devuelven **423 Locked**
+  - GET review devuelve `{locked, signature: {signer_name, signed_at, signature_hash, signed_stats}}`
+  - PDF incluye tabla con firma + hash + disclaimer cuando el token está locked
+  - UI PublicReviewPage: card ámbar "Todos los mensajes aprobados" con botón "🔐 Firmar y cerrar revisión" (solo si `approvedCount===total && !locked`). Tras firmar: card indigo con el nombre + hash + fecha, botones Aprobar/Cambios reemplazados por "Revisión firmada y cerrada".
+- **MonitoringPanel cableado al endpoint real** `GET /api/events?project_id=X`:
+  - Badge `LIVE` (verde) vs `MOCK` (ámbar) según haya eventos reales
+  - Botón "Refrescar" manual
+  - Fallback a `generateMockEvents` cuando no hay eventos reales
+- **AIPromptPanel con mini chat de prueba**:
+  - Botón "🧪 Probar prompt" abre panel chat con Claude Sonnet 4.5 (Emergent LLM key, session_id persistente en la sesión)
+  - Pinta burbujas tipo WhatsApp con multi-turn
+  - Usa el system_prompt actual ya renderizado con variables
+
 ## Testing
-- Iter 1: 7/7 backend tests + flujo UI end-to-end ✅
-- Iter 2: 6/6 nuevos backend tests (review endpoints) + flujo UI completo ✅
-- Iter 3: 13/13 backend tests (7 nuevos PDF+notify + 6 regresión iter2) + 5/6 flujos UI (el 6º gated por modal preexistente, código verificado) ✅
+- Iter 4: **9/9 backend PASS** + **6/6 iter2 regresión** + 5/6 iter3 (la 1 que falla es un test fixture obsoleto con PID que ya no existe, NO es bug real). Frontend: 7/9 verificados end-to-end + 2 por código.
+- Durante iter4 el testing_agent detectó y fixeó 2 bugs críticos introducidos accidentalmente: props de MessageCard (isCustom, canUseEvolution...) no destructuradas + useState `showEvoSend` faltante. Fixes aplicados.
 
 ## Known mocked / not-yet-wired
-- `MonitoringPanel`: datos **MOCK** (`generateMockEvents`). Endpoint `/api/events` real ya existe pero la UI no lo consume.
-- `AIPromptPanel`: editor de prompt sin botón "Probar chat". Endpoint `/api/ai/test-chat` listo.
+- MonitoringPanel mostrará MOCK hasta que tus workflows n8n empiecen a enviar events a `/api/events`.
+- Para Meta Cloud API templates oficiales, el endpoint `/api/whatsapp/send` ya existe pero el frontend no tiene aún botón "Enviar via Meta template" (la pestaña Template del MessageCard sí permite guardar la metadata).
 
 ## Next Action Items
-- **P1** Cablear MonitoringPanel al endpoint real `GET /api/events?project_id=...`
-- **P1** Añadir mini chat de prueba en AIPromptPanel usando `/api/ai/test-chat`
-- **P2** Añadir `data-testid` a botones y tabs pre-existentes
-- **P2** Migrar `@app.on_event("shutdown")` a lifespan handler FastAPI
-- **P2** Refactor de App.jsx (~3800 líneas) en sub-componentes por pestaña
-- **P3** Rate-limiting por token en `/api/review/*`
-- **P3** Debounce del notify trigger en PublicReviewPage
-- **P3** UX: desacoplar prompt "Cómo te llamas?" del click Editar (si ya existe nombre no bloquea)
+- **P1** Añadir botón "Enviar via Meta template" en MessageCard para flujos no-broadcast (usar TemplateMeta.name + /api/whatsapp/send)
+- **P1** Configurar tus workflows n8n reales para que envíen events a `POST /api/events` → Monitor en LIVE
+- **P2** Mostrar todas las AddBars+badges de flujos incluso cuando están colapsados (mejora UX solicitada por testing)
+- **P2** Refactor de MessageCard en sub-componentes (400+ líneas, ya se rompió 1 vez al añadir props)
+- **P2** Exportar workflow n8n desde el proyecto (con flujos custom incluidos)
+- **P3** Rate-limiting en /api/review/* y /api/evolution/send
+- **P3** Fix hash `/sign` para que mismo contenido firmado dos veces de mismo hash (separar content_hash de signed_at)
 
 ## Credentials / Keys
 - `EMERGENT_LLM_KEY` en `/app/backend/.env`
