@@ -948,7 +948,7 @@ function ProjectsDashboard({ projects, onOpen, onCreate, onEdit, onDuplicate, on
                       <span className="bg-stone-100 text-stone-700 px-1.5 py-0.5 rounded">{strat?.emoji} {strat?.label}</span>
                       {p.status === "archived" && <span className="bg-amber-50 text-amber-700 border border-amber-200 px-1.5 py-0.5 rounded">Archivado</span>}
                     </div>
-                    <div className="text-[10px] text-stone-400 mt-2">Actualizado {new Date(p.updated_at || p.created_at).toLocaleDateString("es-ES", { day: "numeric", month: "short" })}</div>
+                    <div className="text-[10px] text-stone-400 mt-2">Actualizado {(p.updated_at || p.created_at) ? new Date(p.updated_at || p.created_at).toLocaleDateString("es-ES", { day: "numeric", month: "short" }) : "—"}</div>
                   </div>
                 </div>
               );
