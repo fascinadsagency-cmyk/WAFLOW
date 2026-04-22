@@ -294,6 +294,20 @@ Editor colaborativo multi-proyecto de secuencias de mensajes de WhatsApp para ag
 - **Uso**: tanto `/api/meta/templates/sync` como `/api/whatsapp/send-template` y `/api/whatsapp/run-flow-test` pasan el texto por `strip_emojis()` antes de enviarlo a Meta.
 - **Testing iter-16**: backend arranca limpio sin warnings, endpoint `/api/meta/templates/sync` responde 400 correcto con alias `copy`, 7/7 tests unitarios de `strip_emojis` OK.
 
+### Iter 17 (feb 2026) — Hardening auth + multi-tenant isolation + refactor MessageCard
+**Motivo**: 3 mejoras propuestas tras code review del usuario: (1) seed admin idempotente, (2) aislamiento multi-tenant en endpoints de negocio, (3) reducir tamaño de `App.jsx`.
+
+- **Backend — Seed admin idempotente**: nueva env var `INITIAL_ADMIN_EMAILS` (coma-separada) en `/app/backend/.env`. `auth_callback` lee la lista y:
+  - Si el email está en `INITIAL_ADMIN_EMAILS` y no existe user → crea como `admin` bypaseando allowlist.
+  - Si el email está en `INITIAL_ADMIN_EMAILS` y existe user con otro rol → promociona a `admin`.
+  - Idempotente: no rompe la política actual (primer login = admin automático seguirá funcionando si la env var está vacía).
+- **Backend — Depends(require_user) en 21 endpoints sensibles**: `/api/storage/*` (3), `/api/ai/test-chat`, `/api/events` GET, `/api/whatsapp/send`, `/api/whatsapp/send-template`, `/api/test-connection`, `/api/evolution/send`, `/api/launch/*` (4), `/api/intake/create`, `/api/intake/project/*` (3), `/api/meta/templates/sync`, `/api/meta/templates/status/*`, `/api/whatsapp/run-flow-test` (POST + cancel).
+  - Helpers `require_user`/`require_admin`/`_get_session_from_request` movidos al principio del archivo para poder usarlos en `Depends()` de endpoints.
+  - Rutas públicas intactas: `/api/review/*` (magic-link), `/api/intake/{token}/*` (cliente), `/api/intake/file/*`, `/api/auth/*`, `/api/events` POST (webhooks n8n sin cookie), `GET /api/whatsapp/run-flow-test/{run_id}` (polling público del modal).
+- **Frontend — Refactor MessageCard**: extraído `App.jsx` → `/app/frontend/src/components/MessageCard.jsx` (~600 líneas). Subcomponentes movidos con él: `VarPicker`, `AttachCreativeModal`, `EvolutionSendModal`, `MetaTemplateSendModal`. Eliminado dead code `MetaTestSendModal` (iter-5). Extraídos `CopyButton` y `Field` a `/app/frontend/src/components/ui-primitives.jsx`. Movidos helpers `extractVarsUsed`, `stripEmojis`, `hasEmojis`, `computeSkipCondition`, `parseDayOffset`, `RUNTIME_VARS` a `waflow-utils.js`.
+  - **App.jsx: 5973 → 5082 líneas (-891)**. Lint limpio, compila sin errores.
+- **Testing iter-17** (`/app/backend/tests/test_iter10_auth_protection.py`, 43 tests): 21 endpoints protegidos devuelven 401 sin cookie; 13 públicos siguen abiertos; `strip_emojis` sin trailing spaces; alias `copy`/`copy_text` ambos aceptados; sin warning Pydantic. **43/43 PASS en 5.13s.**
+
 ## Next Action Items
 - **P1** Extraer `IntakePanel` de App.jsx a `src/panels/IntakePanel.jsx` (~300 líneas dentro de App.jsx = 5150 tras iter-9) siguiendo el patrón de PublicReviewPage.
 - **P1** Continuar refactor App.jsx: `ConnectionsPanel`, `AutopilotPanel+LaunchWizard`, `MessageCard` (411 líneas, complejidad 107), `ProjectWorkspace` (480 líneas). Objetivo: App.jsx <3500 líneas.
