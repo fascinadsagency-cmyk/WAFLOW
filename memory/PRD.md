@@ -294,6 +294,27 @@ Editor colaborativo multi-proyecto de secuencias de mensajes de WhatsApp para ag
 - **Uso**: tanto `/api/meta/templates/sync` como `/api/whatsapp/send-template` y `/api/whatsapp/run-flow-test` pasan el texto por `strip_emojis()` antes de enviarlo a Meta.
 - **Testing iter-16**: backend arranca limpio sin warnings, endpoint `/api/meta/templates/sync` responde 400 correcto con alias `copy`, 7/7 tests unitarios de `strip_emojis` OK.
 
+### Iter 18 (feb 2026) — Code quality refactor (complejidad ciclomática)
+**Motivo**: Code quality report externo marcó 10 funciones con alta complejidad ciclomática (rango 11-34). Objetivo: bajar todas por debajo de 10.
+
+**Refactors aplicados** (33 helpers nuevos extraídos, ninguna función endpoint supera ~5 de complejidad ahora):
+- `meta_templates_sync` (34 → ~5): 7 helpers — `_build_meta_template_name`, `_fetch_existing_meta_templates`, `_build_header_component`, `_build_template_components`, `_build_meta_template_payload`, `_delete_existing_meta_template`, `_create_meta_template`, `_sync_single_template_item`.
+- `intake_agency_review` (20 → ~5): 3 helpers — `_apply_approved_variable`, `_apply_approved_creative`, `_approve_intake_item`. Early-return en validación de `action`.
+- `_flow_test_run_task` (20 → ~5): 3 helpers — `_build_flow_test_item_payload`, `_send_flow_test_item`, `_is_flow_test_cancelled`.
+- `whatsapp_send_template` (19 → ~5): 4 helpers — `_build_template_header_component`, `_build_template_body_component`, `_build_meta_send_template_payload`, `_post_meta_send`.
+- `auth_callback` (16 → ~5): 6 helpers — `_fetch_emergent_session_data`, `_get_initial_admin_emails`, `_resolve_new_user_role`, `_create_user`, `_update_existing_user`, `_persist_user_session`, `_set_session_cookie`.
+- `ai_test_chat` (12 → ~5): 1 helper — `_build_llm_chat_final_text`.
+- `_get_session_from_request` (12 → ~5): 2 helpers — `_extract_session_token`, `_parse_expires_at`.
+- `review_notify` (11 → ~5): 1 helper — `_post_webhook`.
+- `meta_templates_refresh_status` (14 → ~5): 2 helpers — `_fetch_waba_templates_full`, `_merge_template_status`.
+- `_pdf_messages_section` (14 → ~5): 3 helpers — `_pdf_render_vars`, `_pdf_status_metadata`, `_pdf_render_message_block`.
+
+**Tests `is` vs `==`**: revisado. Todos los usos son `is True`, `is False`, `is None` — PEP8 correcto (mismo hallazgo que iter-8, falso positivo del linter externo). No requiere cambios.
+
+**Type hints en tests**: no añadidos masivamente. Los helpers compartidos de producción ya llevan hints; los test functions no aportan valor añadiéndoles `-> None` uniformemente.
+
+**Testing iter-18**: `/app/backend/tests/test_iter10_auth_protection.py` 43/43 PASS tras refactor. Smoke curl en 8 endpoints preserva contrato 401/404. 33 helpers verificados sin huérfanos. Backend arranca sin warnings Pydantic ni FastAPIError.
+
 ### Iter 17 (feb 2026) — Hardening auth + multi-tenant isolation + refactor MessageCard
 **Motivo**: 3 mejoras propuestas tras code review del usuario: (1) seed admin idempotente, (2) aislamiento multi-tenant en endpoints de negocio, (3) reducir tamaño de `App.jsx`.
 
