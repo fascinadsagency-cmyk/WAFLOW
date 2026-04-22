@@ -253,7 +253,7 @@ async def whatsapp_send_template(body: WhatsAppTemplateSendBody):
     if body.params:
         components.append({
             "type": "body",
-            "parameters": [{"type": "text", "text": str(p)[:1024]} for p in body.params],
+            "parameters": [{"type": "text", "text": strip_emojis(str(p))[:1024]} for p in body.params],
         })
 
     payload = {
@@ -1249,6 +1249,31 @@ class MetaTemplatesSyncBody(BaseModel):
     force_replace: bool = False
 
 
+# Regex emoji (Extended_Pictographic + variation selectors + ZWJ) — defensive strip
+# antes de enviar a Meta. Complementa el strip del frontend.
+EMOJI_RE_PY = _re.compile(
+    "[\U0001F000-\U0001FFFF"
+    "\u2600-\u27BF"
+    "\u2300-\u23FF"
+    "\uFE00-\uFE0F"
+    "\u200D\u20E3"
+    "\u2190-\u21FF"
+    "\u2B00-\u2BFF"
+    "\u3000-\u303F]",
+    flags=_re.UNICODE,
+)
+
+
+def strip_emojis(text: str) -> str:
+    if not text:
+        return text or ""
+    out = EMOJI_RE_PY.sub("", text)
+    # Colapsa espacios dobles que puedan quedar + espacios antes de puntuación
+    out = _re.sub(r"[ \t]{2,}", " ", out)
+    out = _re.sub(r" +([,.!?;:])", r"\1", out)
+    return out
+
+
 async def _categorize_copy_llm(copy_text: str) -> str:
     """LLM: MARKETING vs UTILITY según el contenido del copy."""
     try:
@@ -1401,8 +1426,11 @@ async def meta_templates_sync(body: MetaTemplatesSyncFullBody):
             # Categorizar con LLM
             category = await _categorize_copy_llm(it.copy)
 
+            # Strip emojis defensivo (segunda capa tras frontend)
+            copy_clean = strip_emojis(it.copy)
+
             # Convertir variables
-            body_text, var_names = _convert_vars_to_meta_placeholders(it.copy)
+            body_text, var_names = _convert_vars_to_meta_placeholders(copy_clean)
 
             # Truncar a 1024 chars (límite Meta)
             if len(body_text) > 1024:
@@ -1605,7 +1633,7 @@ async def _flow_test_run_task(run_id: str):
             if it.get("params"):
                 components.append({
                     "type": "body",
-                    "parameters": [{"type": "text", "text": str(p)[:1024]} for p in it["params"]],
+                    "parameters": [{"type": "text", "text": strip_emojis(str(p))[:1024]} for p in it["params"]],
                 })
             payload = {
                 "messaging_product": "whatsapp",

@@ -193,6 +193,20 @@ function parseButtons(str) {
   });
   return btns;
 }
+
+// Regex para detectar emojis (Unicode property Extended_Pictographic + variation selectors + ZWJ).
+// Se usa para (a) bloquear entrada en el editor de copy de flujos Meta,
+// (b) marcar warnings en el Checker, y (c) strip defensivo antes de enviar a Meta.
+const EMOJI_RE = /[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}\u{2300}-\u{23FF}\u{FE00}-\u{FE0F}\u{200D}\u{20E3}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}\u{3000}-\u{303F}]/gu;
+function stripEmojis(text) {
+  if (!text) return text;
+  // Quitar emojis + espacios duplicados resultantes
+  return text.replace(EMOJI_RE, "").replace(/[ \t]{2,}/g, " ").replace(/ +([,.!?;:])/g, "$1");
+}
+function hasEmojis(text) {
+  if (!text) return false;
+  return EMOJI_RE.test(text);
+}
 function parseDayOffset(dia) {
   if (!dia) return null;
   const s = String(dia).trim().toUpperCase();
@@ -1034,8 +1048,14 @@ function MessageCard({
               </div>
               {editing ? (
                 <div>
-                  <textarea ref={textareaRef} value={effectiveCopy} onChange={e => onEditCopy(e.target.value)}
+                  <textarea ref={textareaRef} value={effectiveCopy}
+                    onChange={e => onEditCopy(isMetaFlow ? stripEmojis(e.target.value) : e.target.value)}
                     className="w-full min-h-[160px] p-3 text-sm font-mono bg-white border border-stone-300 rounded-md focus:outline-none focus:border-stone-900" />
+                  {isMetaFlow && (
+                    <div className="text-[10.5px] text-amber-700 mt-1 flex items-center gap-1">
+                      ⚠ No se permiten emojis en mensajes Meta — se eliminan automáticamente al escribir.
+                    </div>
+                  )}
                   <div className="flex items-center gap-2 mt-2 flex-wrap">
                     <button onClick={() => setShowVarPicker(v => !v)}
                       data-testid={`toggle-var-picker-${flowKey}-${msg.id || index}`}
@@ -1068,6 +1088,17 @@ function MessageCard({
                 </div>
               ) : (
                 <div className="bg-white border border-stone-200 rounded-md p-3 text-sm text-stone-800 whitespace-pre-wrap leading-relaxed">{rendered}</div>
+              )}
+              {isMetaFlow && hasEmojis(effectiveCopy) && (
+                <div className="mt-1 text-[10.5px] text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1 flex items-center justify-between gap-2"
+                  data-testid={`emoji-warning-${flowKey}-${msg.id || index}`}>
+                  <span>⚠ Este mensaje contiene emojis y es de un flujo Meta. Meta puede rechazar la plantilla.</span>
+                  <button onClick={() => onEditCopy(stripEmojis(effectiveCopy))}
+                    data-testid={`strip-emojis-${flowKey}-${msg.id || index}`}
+                    className="text-[11px] font-semibold bg-amber-600 text-white px-2 py-0.5 rounded hover:bg-amber-700">
+                    Limpiar emojis
+                  </button>
+                </div>
               )}
               <div className="mt-1 text-[10px] text-stone-500 flex justify-end gap-3">
                 <span>{effectiveCopy.length} chars</span>
@@ -4418,7 +4449,9 @@ function StatCard({ label, value, sub, icon, alert }) {
 function CheckerPanel({ flows, vars, edits, creatives, templatesByMsg, variantsByMsg, onGoToMessage }) {
   const checks = useMemo(() => {
     const issues = [];
+    const EVOLUTION_KEYS = new Set(["broadcasts", "venta_comunidad"]);
     flows.forEach(f => {
+      const isMetaFlow = !EVOLUTION_KEYS.has(f.key);
       f.items.forEach((m, i) => {
         const msgKey = `${f.key}:${m.id || i}`;
         const copy = edits[msgKey] ?? m.copy;
@@ -4445,9 +4478,13 @@ function CheckerPanel({ flows, vars, edits, creatives, templatesByMsg, variantsB
         // 6. Variantes A/B con % que no suma
         const v = variantsByMsg[msgKey];
         if (v?.enabled && v.items?.length > 0) {
-          const total = 100 / (v.items.length + 1); // aproximado
           const sum = v.items.reduce((s, vv) => s + (vv.traffic || 0), 0);
           if (sum >= 100) issues.push({ type: "warning", flowKey: f.key, msgKey, label: `${f.label} · ${m.id || i}`, text: `A/B: suma de tráfico = ${sum}% · quedaría 0% para la variante A (principal)` });
+        }
+
+        // 7. Emojis en flujos Meta (Meta puede rechazar la plantilla)
+        if (isMetaFlow && hasEmojis(copy)) {
+          issues.push({ type: "warning", flowKey: f.key, msgKey, label: `${f.label} · ${m.id || i}`, text: "Contiene emojis · Meta puede rechazar la plantilla. Usa el botón 'Limpiar emojis' en el mensaje." });
         }
       });
     });
