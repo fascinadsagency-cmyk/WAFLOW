@@ -287,6 +287,13 @@ Editor colaborativo multi-proyecto de secuencias de mensajes de WhatsApp para ag
 ## Known mocked / not-yet-wired
 - `MonitoringPanel`: LIVE cuando n8n envíe events reales, MOCK mientras tanto (fallback automático).
 
+### Iter 16 (feb 2026) — Sin emojis en mensajes Meta (cierre)
+- **Motivo**: Meta prohíbe caracteres no compatibles (muchos emojis) en plantillas. El frontend ya hacía strip en tiempo real, faltaba blindar el backend.
+- **Backend — `strip_emojis()`** (server.py): corregido para no dejar espacios sobrantes. Ahora colapsa espacios dobles, elimina espacios antes de puntuación, recorta cada línea y hace `.strip()` final. 7/7 casos de test pasan.
+- **Backend — `MetaTemplateSyncItemBody`**: renombrado campo `copy` a `copy_text` con `Field(alias="copy")` + `populate_by_name=True`. Resuelve `UserWarning: Field name "copy" shadows an attribute in parent "BaseModel"`. El frontend sigue enviando `copy` sin cambios.
+- **Uso**: tanto `/api/meta/templates/sync` como `/api/whatsapp/send-template` y `/api/whatsapp/run-flow-test` pasan el texto por `strip_emojis()` antes de enviarlo a Meta.
+- **Testing iter-16**: backend arranca limpio sin warnings, endpoint `/api/meta/templates/sync` responde 400 correcto con alias `copy`, 7/7 tests unitarios de `strip_emojis` OK.
+
 ## Next Action Items
 - **P1** Extraer `IntakePanel` de App.jsx a `src/panels/IntakePanel.jsx` (~300 líneas dentro de App.jsx = 5150 tras iter-9) siguiendo el patrón de PublicReviewPage.
 - **P1** Continuar refactor App.jsx: `ConnectionsPanel`, `AutopilotPanel+LaunchWizard`, `MessageCard` (411 líneas, complejidad 107), `ProjectWorkspace` (480 líneas). Objetivo: App.jsx <3500 líneas.

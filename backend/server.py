@@ -1268,10 +1268,12 @@ def strip_emojis(text: str) -> str:
     if not text:
         return text or ""
     out = EMOJI_RE_PY.sub("", text)
-    # Colapsa espacios dobles que puedan quedar + espacios antes de puntuación
+    # Colapsa espacios dobles que queden + espacios antes de puntuación + trim por línea
     out = _re.sub(r"[ \t]{2,}", " ", out)
     out = _re.sub(r" +([,.!?;:])", r"\1", out)
-    return out
+    # Recorta espacios por línea para no dejar sobras al final de cada renglón
+    out = "\n".join(line.strip() for line in out.split("\n"))
+    return out.strip()
 
 
 async def _categorize_copy_llm(copy_text: str) -> str:
@@ -1363,10 +1365,12 @@ def _flatten_project_meta_messages(project_id: str, strategy: str, custom_msgs: 
 
 
 class MetaTemplateSyncItemBody(BaseModel):
+    model_config = {"populate_by_name": True}
+
     msg_key: str            # "flujo_a:M1"
     flow_key: str
     msg_id: str
-    copy: str               # copy editado final (sin reemplazar variables)
+    copy_text: str = Field(alias="copy")  # copy editado final (sin reemplazar variables)
     botones: Optional[str] = None
     creative_url: Optional[str] = None  # URL pública o /api/intake/file/{id} para header
 
@@ -1424,10 +1428,10 @@ async def meta_templates_sync(body: MetaTemplatesSyncFullBody):
                 continue
 
             # Categorizar con LLM
-            category = await _categorize_copy_llm(it.copy)
+            category = await _categorize_copy_llm(it.copy_text)
 
             # Strip emojis defensivo (segunda capa tras frontend)
-            copy_clean = strip_emojis(it.copy)
+            copy_clean = strip_emojis(it.copy_text)
 
             # Convertir variables
             body_text, var_names = _convert_vars_to_meta_placeholders(copy_clean)
