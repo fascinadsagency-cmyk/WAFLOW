@@ -224,13 +224,16 @@ def test_meta_template_alias_copy_text_also_accepted():
 # --------------------------------------------------------------------
 
 def test_initial_admin_emails_logic_present_in_source():
-    """Verify the env var is read and is_initial_admin flag is computed."""
+    """Verify the env var is read and the admin-promotion logic still exists.
+    Post-refactor (iter-18): these live inside small helpers (_resolve_new_user_role,
+    _update_existing_user, _get_initial_admin_emails) instead of a single mega-function."""
     with open("/app/backend/server.py") as f:
         src = f.read()
     assert 'os.environ.get("INITIAL_ADMIN_EMAILS"' in src
     assert "is_initial_admin" in src
-    # Branch 1: new user — uses is_initial_admin to assign role=admin
-    assert "if is_initial_admin or user_count == 0" in src
+    # Branch 1: new user — admin when in INITIAL_ADMIN_EMAILS OR first user of the system
+    assert "if is_initial_admin:" in src
+    assert "if user_count == 0:" in src
     # Branch 2: existing user — promotes to admin if matches
     assert 'if is_initial_admin and existing.get("role") != "admin":' in src
 

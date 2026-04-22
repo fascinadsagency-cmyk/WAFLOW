@@ -1,0 +1,44 @@
+{
+  "summary": "Re-test post massive refactor (10 functions, 33 helpers extracted). Iter-10 suite 43/43 PASSED. Smoke curl on 8 endpoints behaves exactly as before refactor (401/404 contract preserved). Static analysis confirms all 33 helpers are defined and used (no orphans). Backend currently runs cleanly: only 'Application startup complete' on the active uvicorn process; no Pydantic warnings, no FastAPIError on the running PID.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/auth/callback", "issue": "Endpoint expects session_id in JSON body. Sending without body returns 422 instead of 401. With proper body and bogus session_id it correctly returns 401 'session_id inválido o expirado'. Acceptable but worth documenting (request expected 401/502)."},
+      {"endpoint": "global", "issue": "DeprecationWarning: @app.on_event('shutdown') at server.py:2138 should migrate to lifespan event handlers (FastAPI). Cosmetic, non-blocking."},
+      {"endpoint": "global", "issue": "Historic FastAPIError in backend.err.log from a PREVIOUS reload (httpx.AsyncClient annotated as response_field). The currently-running process (pid 2936) started cleanly; logs from older PIDs remain in the file. Not a regression of this iteration."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_iter10_auth_protection.py",
+    "/app/test_reports/pytest/iter10_rerun.xml"
+  ],
+  "smoke_test_results": {
+    "(a) POST /api/meta/templates/sync no-cookie": "401 'No autenticado' OK",
+    "(a) POST /api/meta/templates/sync fake-cookie": "401 'No autenticado' OK",
+    "(b) POST /api/intake/project/proj_dummy/review no-cookie": "401 OK",
+    "(c) POST /api/whatsapp/send-template no-cookie": "401 OK",
+    "(d) POST /api/auth/callback fake session_id (with body)": "401 'session_id inválido o expirado' OK",
+    "(e) POST /api/ai/test-chat no-cookie": "401 OK",
+    "(f) GET /api/review/fake_token_xyz/summary.pdf": "404 'Link no válido' OK",
+    "(g) POST /api/review/fake_token_xyz/notify with valid body": "404 'Link no válido' OK",
+    "(h) GET /api/meta/templates/status/proj_dummy no-cookie": "401 OK"
+  },
+  "static_analysis_helpers": "All 33 helpers found exactly once with ≥1 external reference each: _post_webhook, _build_meta_template_name, _fetch_existing_meta_templates, _build_header_component, _build_template_components, _build_meta_template_payload, _delete_existing_meta_template, _create_meta_template, _sync_single_template_item, _apply_approved_variable, _apply_approved_creative, _approve_intake_item, _build_template_header_component, _build_template_body_component, _build_meta_send_template_payload, _post_meta_send, _build_flow_test_item_payload, _send_flow_test_item, _is_flow_test_cancelled, _fetch_emergent_session_data, _get_initial_admin_emails, _resolve_new_user_role, _create_user, _update_existing_user, _persist_user_session, _set_session_cookie, _build_llm_chat_final_text, _extract_session_token, _parse_expires_at, _fetch_waba_templates_full, _merge_template_status, _pdf_render_vars, _pdf_status_metadata, _pdf_render_message_block. No orphans.",
+  "action_items": [
+    "(Optional) Migrate @app.on_event('shutdown') → lifespan handler to silence DeprecationWarning.",
+    "(Optional) Consider rotating/truncating /var/log/supervisor/backend.err.log to remove stale FastAPIError noise from previous iterations."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now ~2138+ lines; consider splitting into modules (auth, intake, meta_templates, whatsapp, review, pdf) per the file-size guideline (>700 lines).",
+    "Refactor quality is good: each of the 33 helpers is well-scoped, single-purpose, and used by its parent function. Reduced complexity confirmed structurally."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (43/43 iter-10 + 8/8 smoke contract)", "frontend": "n/a (backend-only test)"},
+  "test_credentials": "Not required — only public/401 paths exercised.",
+  "seed_data_creation": "None.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iter-17 broke the older suites (test_intake.py, test_review.py, test_iter6/7.py) by adding Depends(require_user) to intake_create and similar; they need cookies to be re-enabled. Per main agent instruction, those are out-of-scope for this iteration. The canonical suite to run going forward is /app/backend/tests/test_iter10_auth_protection.py (43 tests, ~5 s). Backend public URL: https://new-app-builder-28.preview.emergentagent.com.",
+  "rca of the issue": "N/A — no regressions detected from the iter-11 refactor batch."
+}

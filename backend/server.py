@@ -31,32 +31,43 @@ SESSION_COOKIE_NAME = "waflow_session"
 SESSION_DURATION_DAYS = 7
 
 
-async def _get_session_from_request(request: Request) -> Optional[Dict[str, Any]]:
-    """Extrae session_token de cookie (primero) o Authorization header (fallback).
-    Valida existencia, expiración, y devuelve el user doc sin _id."""
+def _extract_session_token(request: Request) -> Optional[str]:
+    """Cookie (preferente) → Authorization: Bearer (fallback)."""
     token = request.cookies.get(SESSION_COOKIE_NAME)
-    if not token:
-        auth = request.headers.get("authorization") or ""
-        if auth.lower().startswith("bearer "):
-            token = auth.split(" ", 1)[1].strip()
+    if token:
+        return token
+    auth = request.headers.get("authorization") or ""
+    if auth.lower().startswith("bearer "):
+        return auth.split(" ", 1)[1].strip()
+    return None
+
+
+def _parse_expires_at(raw: Any) -> Optional[datetime]:
+    if not raw:
+        return None
+    if isinstance(raw, str):
+        try:
+            raw = datetime.fromisoformat(raw)
+        except Exception:
+            return None
+    if raw.tzinfo is None:
+        raw = raw.replace(tzinfo=timezone.utc)
+    return raw
+
+
+async def _get_session_from_request(request: Request) -> Optional[Dict[str, Any]]:
+    """Devuelve el user doc (sin _id) si hay sesión válida; None si no."""
+    token = _extract_session_token(request)
     if not token:
         return None
     session = await db.user_sessions.find_one({"session_token": token}, {"_id": 0})
     if not session:
         return None
-    expires_at = session.get("expires_at")
-    if isinstance(expires_at, str):
-        try:
-            expires_at = datetime.fromisoformat(expires_at)
-        except Exception:
-            return None
-    if expires_at and expires_at.tzinfo is None:
-        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    expires_at = _parse_expires_at(session.get("expires_at"))
     if expires_at and expires_at < datetime.now(timezone.utc):
         await db.user_sessions.delete_one({"session_token": token})
         return None
-    user_doc = await db.users.find_one({"user_id": session["user_id"]}, {"_id": 0})
-    return user_doc
+    return await db.users.find_one({"user_id": session["user_id"]}, {"_id": 0})
 
 
 async def require_user(request: Request) -> Dict[str, Any]:
@@ -130,11 +141,22 @@ class AIChatBody(BaseModel):
     model_name: str = "claude-sonnet-4-5-20250929"
 
 
+def _build_llm_chat_final_text(messages: List["AIChatMessage"]) -> str:
+    """Convierte el historial multi-turn en un bloque textual + último user message.
+    Cada llamada crea nueva instancia LlmChat, así que pasamos toda la historia como contexto."""
+    if len(messages) <= 1:
+        return messages[-1].text
+    history_lines: List[str] = []
+    for m in messages[:-1]:
+        prefix = "Usuario" if m.role == "user" else "Asistente"
+        history_lines.append(f"{prefix}: {m.text}")
+    history_block = "\n".join(history_lines)
+    return f"Historia previa:\n{history_block}\n\nUsuario ahora: {messages[-1].text}"
+
+
 @api_router.post("/ai/test-chat")
 async def ai_test_chat(body: AIChatBody, user: Dict[str, Any] = Depends(require_user)):
-    """Envía el último mensaje del usuario al modelo con el system prompt.
-    Multi-turn: reenvía todo el historial para cada llamada (stateless).
-    """
+    """Envía el último mensaje del usuario al modelo con el system prompt (multi-turn stateless)."""
     try:
         from emergentintegrations.llm.chat import LlmChat, UserMessage
     except Exception as e:
@@ -144,40 +166,20 @@ async def ai_test_chat(body: AIChatBody, user: Dict[str, Any] = Depends(require_
     if not api_key:
         raise HTTPException(status_code=500, detail="EMERGENT_LLM_KEY no configurado")
 
-    session_id = body.session_id or str(uuid.uuid4())
+    user_msgs = [m for m in body.messages if m.role == "user"]
+    if not user_msgs:
+        raise HTTPException(status_code=400, detail="Se requiere al menos un mensaje del usuario")
 
+    session_id = body.session_id or str(uuid.uuid4())
     chat = LlmChat(
         api_key=api_key,
         session_id=session_id,
         system_message=body.system_prompt or "Eres un asistente útil.",
     ).with_model(body.model_provider, body.model_name)
 
-    # La librería mantiene historia por session_id; para simular multi-turn stateless,
-    # reenviamos los mensajes previos antes del último. Si hay solo uno, directo.
     try:
-        last_user_text = None
-        # Reenviar mensajes previos en orden (todos los user excepto el último)
-        user_msgs = [m for m in body.messages if m.role == "user"]
-        if not user_msgs:
-            raise HTTPException(status_code=400, detail="Se requiere al menos un mensaje del usuario")
-
-        # Para historial multi-turn: re-enviamos solo el último user (la librería gestiona su propia historia por session_id,
-        # pero como cada llamada crea nueva instancia, pasamos todo el contexto como user message)
-        if len(body.messages) > 1:
-            # Construir contexto textual con historia previa
-            history_lines = []
-            for m in body.messages[:-1]:
-                prefix = "Usuario" if m.role == "user" else "Asistente"
-                history_lines.append(f"{prefix}: {m.text}")
-            history_block = "\n".join(history_lines)
-            last = body.messages[-1]
-            final_text = f"Historia previa:\n{history_block}\n\nUsuario ahora: {last.text}"
-        else:
-            final_text = body.messages[-1].text
-
-        user_message = UserMessage(text=final_text)
-        response = await chat.send_message(user_message)
-
+        final_text = _build_llm_chat_final_text(body.messages)
+        response = await chat.send_message(UserMessage(text=final_text))
         return {
             "ok": True,
             "session_id": session_id,
@@ -277,10 +279,65 @@ class WhatsAppTemplateSendBody(BaseModel):
     header_media_type: Optional[str] = None  # "image" | "video" | "document"
 
 
+def _build_template_header_component(header_media_url: Optional[str], header_media_type: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not header_media_url or not header_media_type:
+        return None
+    mt = header_media_type.lower()
+    media_key = {"image": "image", "video": "video", "document": "document"}.get(mt)
+    if not media_key:
+        return None
+    return {
+        "type": "header",
+        "parameters": [{"type": media_key, media_key: {"link": header_media_url}}],
+    }
+
+
+def _build_template_body_component(params: List[str]) -> Optional[Dict[str, Any]]:
+    if not params:
+        return None
+    return {
+        "type": "body",
+        "parameters": [{"type": "text", "text": strip_emojis(str(p))[:1024]} for p in params],
+    }
+
+
+def _build_meta_send_template_payload(body: "WhatsAppTemplateSendBody", to: str) -> Dict[str, Any]:
+    components: List[Dict[str, Any]] = []
+    header = _build_template_header_component(body.header_media_url, body.header_media_type)
+    if header:
+        components.append(header)
+    body_c = _build_template_body_component(body.params or [])
+    if body_c:
+        components.append(body_c)
+
+    return {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "template",
+        "template": {
+            "name": body.template_name,
+            "language": {"code": body.language or "es"},
+            **({"components": components} if components else {}),
+        },
+    }
+
+
+async def _post_meta_send(hc: httpx.AsyncClient, phone_id: str, access_token: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    r = await hc.post(
+        f"https://graph.facebook.com/v21.0/{phone_id}/messages",
+        json=payload,
+        headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+    )
+    data = r.json() if r.content else {}
+    if r.status_code < 400:
+        return {"ok": True, "message_id": (data.get("messages") or [{}])[0].get("id"), "response": data}
+    err_msg = (data.get("error") or {}).get("message") or str(data)[:300]
+    return {"ok": False, "status": r.status_code, "error": err_msg, "response": data}
+
+
 @api_router.post("/whatsapp/send-template")
 async def whatsapp_send_template(body: WhatsAppTemplateSendBody, user: Dict[str, Any] = Depends(require_user)):
-    """Envía una plantilla Meta ya aprobada con parámetros rellenos al teléfono destino.
-    Lee phone_number_id + access_token de las conexiones del proyecto."""
+    """Envía una plantilla Meta ya aprobada con parámetros rellenos al teléfono destino."""
     connections = await _read_storage(f"wa_editor:p:{body.project_id}:connections") or {}
     phone_id = connections.get("phoneNumberId")
     access_token = connections.get("accessToken")
@@ -291,43 +348,10 @@ async def whatsapp_send_template(body: WhatsAppTemplateSendBody, user: Dict[str,
     if not to:
         raise HTTPException(status_code=400, detail="Teléfono destino inválido (E.164 sin +).")
 
-    components: List[Dict[str, Any]] = []
-    if body.header_media_url and body.header_media_type:
-        mt = body.header_media_type.lower()
-        media_key = {"image": "image", "video": "video", "document": "document"}.get(mt)
-        if media_key:
-            components.append({
-                "type": "header",
-                "parameters": [{"type": media_key, media_key: {"link": body.header_media_url}}],
-            })
-    if body.params:
-        components.append({
-            "type": "body",
-            "parameters": [{"type": "text", "text": strip_emojis(str(p))[:1024]} for p in body.params],
-        })
-
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": to,
-        "type": "template",
-        "template": {
-            "name": body.template_name,
-            "language": {"code": body.language or "es"},
-            **({"components": components} if components else {}),
-        },
-    }
+    payload = _build_meta_send_template_payload(body, to)
     try:
         async with httpx.AsyncClient(timeout=15.0) as hc:
-            r = await hc.post(
-                f"https://graph.facebook.com/v21.0/{phone_id}/messages",
-                json=payload,
-                headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
-            )
-            data = r.json() if r.content else {}
-            if r.status_code < 400:
-                return {"ok": True, "message_id": (data.get("messages") or [{}])[0].get("id"), "response": data}
-            err_msg = (data.get("error") or {}).get("message") or str(data)[:300]
-            return {"ok": False, "status": r.status_code, "error": err_msg, "response": data}
+            return await _post_meta_send(hc, phone_id, access_token, payload)
     except Exception as e:
         return {"ok": False, "error": f"Error Meta API: {str(e)[:300]}"}
 
@@ -636,6 +660,14 @@ class NotifyBody(BaseModel):
     project_name: Optional[str] = ""
 
 
+async def _post_webhook(hc: httpx.AsyncClient, url: str, payload: Dict[str, Any]) -> Any:
+    try:
+        r = await hc.post(url, json=payload)
+        return r.status_code
+    except Exception as e:
+        return f"err: {e}"
+
+
 @api_router.post("/review/{token}/notify")
 async def review_notify(token: str, body: NotifyBody):
     rec = await db.review_tokens.find_one({"token": token}, {"_id": 0})
@@ -651,29 +683,20 @@ async def review_notify(token: str, body: NotifyBody):
     if pct < 80:
         return {"ok": True, "notified": False, "pct": pct}
 
-    slack_url = notify_config.get("slack_url")
-    discord_url = notify_config.get("discord_url")
-
     message = (
         f"🎉 *WAFLOW · {body.project_name or 'Proyecto'}*\n"
         f"El cliente ha aprobado *{body.approved}/{body.total}* mensajes "
         f"({pct:.0f}%). ¡Podéis cerrar la revisión!"
     )
 
-    results = {"slack": None, "discord": None}
-    async with httpx.AsyncClient(timeout=10.0) as hclient:
+    slack_url = notify_config.get("slack_url")
+    discord_url = notify_config.get("discord_url")
+    results: Dict[str, Any] = {"slack": None, "discord": None}
+    async with httpx.AsyncClient(timeout=10.0) as hc:
         if slack_url:
-            try:
-                r = await hclient.post(slack_url, json={"text": message})
-                results["slack"] = r.status_code
-            except Exception as e:
-                results["slack"] = f"err: {e}"
+            results["slack"] = await _post_webhook(hc, slack_url, {"text": message})
         if discord_url:
-            try:
-                r = await hclient.post(discord_url, json={"content": message})
-                results["discord"] = r.status_code
-            except Exception as e:
-                results["discord"] = f"err: {e}"
+            results["discord"] = await _post_webhook(hc, discord_url, {"content": message})
 
     notify_config["notified_80_at"] = datetime.now(timezone.utc).isoformat()
     notify_config["notified_stats"] = {"approved": body.approved, "total": body.total, "pct": pct}
@@ -776,45 +799,58 @@ def _pdf_stats_table(approval, styles):
     return [t, Spacer(1, 0.5*cm), Paragraph("Detalle por mensaje", styles["h2"])]
 
 
-def _pdf_messages_section(approval, edits, vars_list, styles):
-    from reportlab.lib.units import cm
+def _pdf_render_vars(text: str, vars_list: List[Dict[str, Any]]) -> str:
+    if not text:
+        return ""
+    out = text
+    for v in vars_list:
+        name = v.get("name")
+        if not name:
+            continue
+        out = out.replace("{" + name + "}", str(v.get("value") or f"{{{name}}}"))
+    return out
+
+
+def _pdf_status_metadata(status: Optional[str]) -> tuple:
+    """Devuelve (label, color) para un status de approval."""
     from reportlab.lib import colors
+    if status == "approved":
+        return "✓ APROBADO", colors.HexColor("#059669")
+    if status == "changes":
+        return "✎ CAMBIOS", colors.HexColor("#B45309")
+    return "—", colors.HexColor("#6B7280")
+
+
+def _pdf_render_message_block(msg_key: str, approval_entry: Dict[str, Any], edited_copy: Optional[str], vars_list: List[Dict[str, Any]], styles):
+    from reportlab.lib.units import cm
     from reportlab.platypus import Paragraph, Spacer
-
-    def render_vars(text):
-        if not text:
-            return ""
-        out = text
-        for v in vars_list:
-            name = v.get("name")
-            if not name:
-                continue
-            out = out.replace("{" + name + "}", str(v.get("value") or f"{{{name}}}"))
-        return out
-
-    story = []
-    if not approval:
-        story.append(Paragraph("Sin mensajes revisados todavía.", styles["meta"]))
-        return story
-
-    for msg_key in sorted(approval.keys()):
-        a = approval[msg_key] or {}
-        status = a.get("status")
-        status_label = "✓ APROBADO" if status == "approved" else ("✎ CAMBIOS" if status == "changes" else "—")
-        color = colors.HexColor("#059669") if status == "approved" else (colors.HexColor("#B45309") if status == "changes" else colors.HexColor("#6B7280"))
-        story.append(Paragraph(
-            f"<font name='Courier-Bold' color='#111827'>{msg_key}</font> · <font color='{color.hexval()[2:]}'><b>{status_label}</b></font>",
+    label, color = _pdf_status_metadata(approval_entry.get("status"))
+    block = [
+        Paragraph(
+            f"<font name='Courier-Bold' color='#111827'>{msg_key}</font> · "
+            f"<font color='{color.hexval()[2:]}'><b>{label}</b></font>",
             styles["body"],
-        ))
-        story.append(Paragraph(f"<font color='#6B7280' size='9'>Revisado por: {a.get('by','—')}</font>", styles["meta"]))
-        edited_copy = edits.get(msg_key)
-        if edited_copy:
-            story.append(Spacer(1, 0.1*cm))
-            story.append(Paragraph(render_vars(edited_copy).replace("\n", "<br/>"), styles["body"]))
-        if a.get("comment"):
-            story.append(Spacer(1, 0.1*cm))
-            story.append(Paragraph(f"<b>Nota del cliente:</b> {a['comment']}", styles["note"]))
-        story.append(Spacer(1, 0.3*cm))
+        ),
+        Paragraph(f"<font color='#6B7280' size='9'>Revisado por: {approval_entry.get('by', '—')}</font>", styles["meta"]),
+    ]
+    if edited_copy:
+        block.append(Spacer(1, 0.1 * cm))
+        block.append(Paragraph(_pdf_render_vars(edited_copy, vars_list).replace("\n", "<br/>"), styles["body"]))
+    if approval_entry.get("comment"):
+        block.append(Spacer(1, 0.1 * cm))
+        block.append(Paragraph(f"<b>Nota del cliente:</b> {approval_entry['comment']}", styles["note"]))
+    block.append(Spacer(1, 0.3 * cm))
+    return block
+
+
+def _pdf_messages_section(approval, edits, vars_list, styles):
+    from reportlab.platypus import Paragraph
+    if not approval:
+        return [Paragraph("Sin mensajes revisados todavía.", styles["meta"])]
+    story = []
+    for msg_key in sorted(approval.keys()):
+        entry = approval[msg_key] or {}
+        story.extend(_pdf_render_message_block(msg_key, entry, edits.get(msg_key), vars_list, styles))
     return story
 
 
@@ -1215,65 +1251,85 @@ async def intake_client_complete(token: str):
     return {"ok": True, "pending_count": pending_count, "completed_at": now}
 
 
+async def _apply_approved_variable(project_id: str, item: Dict[str, Any]) -> None:
+    vars_key = f"wa_editor:p:{project_id}:vars"
+    vars_list = await _read_storage(vars_key) or []
+    name = item.get("key")
+    value = item.get("client_value") or ""
+    vidx = next((i for i, v in enumerate(vars_list) if v.get("name") == name), None)
+    if vidx is not None:
+        vars_list[vidx]["value"] = value
+    else:
+        vars_list.append({
+            "name": name,
+            "value": value,
+            "category": item.get("section") or "Cliente",
+            "editable": True,
+        })
+    await _write_storage(vars_key, vars_list)
+
+
+async def _apply_approved_creative(project_id: str, item: Dict[str, Any]) -> None:
+    if not item.get("client_file_id"):
+        return
+    creatives_key = f"wa_editor:p:{project_id}:creatives"
+    creatives = await _read_storage(creatives_key) or []
+    # Dedupe por intake_item_id
+    creatives = [c for c in creatives if c.get("intake_item_id") != item.get("id")]
+    creatives.append({
+        "id": f"cli_{item['client_file_id']}",
+        "name": item.get("client_file_name") or item.get("label"),
+        "type": _detect_creative_type(item.get("client_file_type") or ""),
+        "url": f"/api/intake/file/{item['client_file_id']}",
+        "source": "client_intake",
+        "intake_item_id": item.get("id"),
+        "messageKey": None,
+    })
+    await _write_storage(creatives_key, creatives)
+
+
+async def _approve_intake_item(project_id: str, item: Dict[str, Any]) -> None:
+    """Marca item como approved y aplica el efecto correspondiente según su tipo."""
+    if item.get("type") == "variable":
+        await _apply_approved_variable(project_id, item)
+    elif item.get("type") == "creative":
+        await _apply_approved_creative(project_id, item)
+
+
 @api_router.post("/intake/project/{project_id}/review")
 async def intake_agency_review(project_id: str, body: IntakeReviewBody, user: Dict[str, Any] = Depends(require_user)):
     """Agencia aprueba o rechaza un item pendiente. Si aprueba → aplica al proyecto."""
+    if body.action not in ("approve", "reject"):
+        raise HTTPException(status_code=400, detail="action debe ser 'approve' o 'reject'")
+
     rec = await db.intake_tokens.find_one({"project_id": project_id})
     if not rec:
         raise HTTPException(status_code=404, detail="Intake no encontrado")
+
     items = rec.get("items", [])
     idx = next((i for i, it in enumerate(items) if it.get("id") == body.item_id), None)
     if idx is None:
         raise HTTPException(status_code=404, detail="Item no encontrado")
-    it = items[idx]
-    if it.get("status") != "pending":
-        raise HTTPException(status_code=400, detail=f"Item no está pending (status={it.get('status')})")
+
+    item = items[idx]
+    if item.get("status") != "pending":
+        raise HTTPException(status_code=400, detail=f"Item no está pending (status={item.get('status')})")
+
     now = datetime.now(timezone.utc).isoformat()
     if body.action == "reject":
-        it["status"] = "rejected"
-        it["review_comment"] = body.comment
-        it["reviewed_at"] = now
-    elif body.action == "approve":
-        it["status"] = "approved"
-        it["reviewed_at"] = now
-        # Aplicar al proyecto
-        if it.get("type") == "variable":
-            vars_key = f"wa_editor:p:{project_id}:vars"
-            vars_list = await _read_storage(vars_key) or []
-            vidx = next((i for i, v in enumerate(vars_list) if v.get("name") == it.get("key")), None)
-            if vidx is not None:
-                vars_list[vidx]["value"] = it.get("client_value") or ""
-            else:
-                vars_list.append({
-                    "name": it.get("key"),
-                    "value": it.get("client_value") or "",
-                    "category": it.get("section") or "Cliente",
-                    "editable": True,
-                })
-            await _write_storage(vars_key, vars_list)
-        elif it.get("type") == "creative" and it.get("client_file_id"):
-            creatives_key = f"wa_editor:p:{project_id}:creatives"
-            creatives = await _read_storage(creatives_key) or []
-            # Dedupe por intake_item_id: si ya hay un creative de este item, reemplazarlo
-            creatives = [c for c in creatives if c.get("intake_item_id") != it.get("id")]
-            creatives.append({
-                "id": f"cli_{it['client_file_id']}",
-                "name": it.get("client_file_name") or it.get("label"),
-                "type": _detect_creative_type(it.get("client_file_type") or ""),
-                "url": f"/api/intake/file/{it['client_file_id']}",
-                "source": "client_intake",
-                "intake_item_id": it.get("id"),
-                "messageKey": None,
-            })
-            await _write_storage(creatives_key, creatives)
+        item["status"] = "rejected"
+        item["review_comment"] = body.comment
     else:
-        raise HTTPException(status_code=400, detail="action debe ser 'approve' o 'reject'")
-    items[idx] = it
+        item["status"] = "approved"
+        await _approve_intake_item(project_id, item)
+
+    item["reviewed_at"] = now
+    items[idx] = item
     await db.intake_tokens.update_one(
         {"project_id": project_id},
         {"$set": {"items": items, "updated_at": now}},
     )
-    return {"ok": True, "status": it["status"]}
+    return {"ok": True, "status": item["status"]}
 
 
 def _detect_creative_type(content_type: str) -> str:
@@ -1431,157 +1487,205 @@ class MetaTemplatesSyncFullBody(BaseModel):
     force_replace: bool = False
 
 
+# --- Helpers de meta_templates_sync -----------------------------------------
+def _build_meta_template_name(flow_key: str, msg_id: str) -> str:
+    tpl_name = f"waflow_{flow_key}_{msg_id}".lower()
+    return _re.sub(r"[^a-z0-9_]", "_", tpl_name)[:512]
+
+
+async def _fetch_existing_meta_templates(hc: httpx.AsyncClient, waba_id: str, access_token: str) -> set:
+    try:
+        r = await hc.get(
+            f"https://graph.facebook.com/v21.0/{waba_id}/message_templates",
+            params={"fields": "name,status", "limit": 200},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        if r.status_code >= 400:
+            return set()
+        return {tpl.get("name") for tpl in (r.json().get("data") or []) if tpl.get("name")}
+    except Exception:
+        return set()
+
+
+def _build_header_component(creative_url: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Construye el componente HEADER Meta a partir de una URL pública, o None."""
+    if not creative_url or not creative_url.startswith(("http://", "https://")):
+        return None
+    if "/api/intake/file/" in creative_url:
+        return None  # Meta no puede acceder a nuestros GridFS locales
+    url_lower = creative_url.lower()
+    if any(url_lower.endswith(x) for x in (".jpg", ".jpeg", ".png", ".webp")):
+        fmt = "IMAGE"
+    elif any(url_lower.endswith(x) for x in (".mp4", ".mov")):
+        fmt = "VIDEO"
+    elif url_lower.endswith(".pdf"):
+        fmt = "DOCUMENT"
+    else:
+        return None
+    return {"type": "HEADER", "format": fmt, "example": {"header_handle": [creative_url]}}
+
+
+def _build_template_components(body_text: str, var_names: List[str], header: Optional[Dict[str, Any]], buttons: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    components: List[Dict[str, Any]] = []
+    if header:
+        components.append(header)
+    body_component: Dict[str, Any] = {"type": "BODY", "text": body_text}
+    if var_names:
+        body_component["example"] = {"body_text": [["ejemplo_" + v.lower() for v in var_names]]}
+    components.append(body_component)
+    components.append({"type": "FOOTER", "text": "Powered by WAFLOW"})
+    if buttons:
+        components.append({"type": "BUTTONS", "buttons": buttons})
+    return components
+
+
+async def _build_meta_template_payload(item: "MetaTemplateSyncItemBody") -> Dict[str, Any]:
+    """Construye el payload Meta completo para un item (categorización LLM + variables + componentes)."""
+    category = await _categorize_copy_llm(item.copy_text)
+    copy_clean = strip_emojis(item.copy_text)
+    body_text, var_names = _convert_vars_to_meta_placeholders(copy_clean)
+    if len(body_text) > 1024:
+        body_text = body_text[:1021] + "..."
+    header = _build_header_component(item.creative_url)
+    buttons = _parse_template_buttons(item.botones or "")
+    components = _build_template_components(body_text, var_names, header, buttons)
+    return {
+        "payload": {"name": "", "language": "es", "category": category, "components": components},
+        "category": category,
+        "var_names": var_names,
+    }
+
+
+async def _delete_existing_meta_template(hc: httpx.AsyncClient, waba_id: str, access_token: str, tpl_name: str) -> None:
+    try:
+        await hc.delete(
+            f"https://graph.facebook.com/v21.0/{waba_id}/message_templates",
+            params={"name": tpl_name},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+    except Exception:
+        pass
+
+
+async def _create_meta_template(
+    hc: httpx.AsyncClient, waba_id: str, access_token: str,
+    tpl_name: str, payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    """POST a Meta para crear la plantilla. Devuelve {ok, meta_id, meta_status, error}."""
+    payload_named = {**payload, "name": tpl_name}
+    try:
+        r = await hc.post(
+            f"https://graph.facebook.com/v21.0/{waba_id}/message_templates",
+            json=payload_named,
+            headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+        )
+        data = r.json() if r.content else {}
+        if r.status_code < 400:
+            return {"ok": True, "meta_id": data.get("id"), "meta_status": data.get("status") or "PENDING"}
+        err_msg = (data.get("error") or {}).get("message") or str(data)[:300]
+        return {"ok": False, "error": err_msg}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:300]}
+
+
+async def _sync_single_template_item(
+    hc: httpx.AsyncClient,
+    item: "MetaTemplateSyncItemBody",
+    waba_id: str,
+    access_token: str,
+    existing_names: set,
+    force_replace: bool,
+    existing_templates_state: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Procesa un único item de sync. Devuelve el result dict + muta existing_templates_state al éxito."""
+    tpl_name = _build_meta_template_name(item.flow_key, item.msg_id)
+
+    if tpl_name in existing_names and not force_replace:
+        return {"msg_key": item.msg_key, "template_name": tpl_name, "ok": True, "status": "skipped", "reason": "Ya existe en Meta"}
+
+    built = await _build_meta_template_payload(item)
+    payload = built["payload"]
+    category = built["category"]
+    var_names = built["var_names"]
+
+    if force_replace and tpl_name in existing_names:
+        await _delete_existing_meta_template(hc, waba_id, access_token, tpl_name)
+
+    res = await _create_meta_template(hc, waba_id, access_token, tpl_name, payload)
+    if not res["ok"]:
+        return {"msg_key": item.msg_key, "template_name": tpl_name, "ok": False, "status": "error", "error": res["error"]}
+
+    existing_templates_state[item.msg_key] = {
+        "isTemplate": True, "auto": False,
+        "name": tpl_name, "language": "es", "category": category,
+        "status": res["meta_status"], "meta_id": res["meta_id"],
+        "params_mapping": var_names, "synced_at": datetime.now(timezone.utc).isoformat(),
+    }
+    return {
+        "msg_key": item.msg_key, "template_name": tpl_name,
+        "ok": True, "status": "created",
+        "meta_id": res["meta_id"], "meta_status": res["meta_status"],
+        "category": category, "params_mapping": var_names,
+    }
+
+
 @api_router.post("/meta/templates/sync")
 async def meta_templates_sync(body: MetaTemplatesSyncFullBody, user: Dict[str, Any] = Depends(require_user)):
-    """Sincroniza plantillas Meta para un proyecto. Itera los items, categoriza con LLM,
-    convierte variables, y crea cada plantilla en el WABA vía Graph API.
-    """
-    # Leer credenciales Meta del proyecto
+    """Sincroniza plantillas Meta para un proyecto. Delega cada item en _sync_single_template_item."""
     connections = await _read_storage(f"wa_editor:p:{body.project_id}:connections") or {}
     waba_id = connections.get("wabaId")
     access_token = connections.get("accessToken")
     if not waba_id or not access_token:
         raise HTTPException(status_code=400, detail="Faltan credenciales Meta: WABA ID y/o Access Token en Conexiones.")
 
-    # Leer plantillas ya creadas (templatesByMsg)
     existing_templates_state = await _read_storage(f"wa_editor:p:{body.project_id}:templates") or {}
-
     results: List[Dict[str, Any]] = []
-    total = len(body.items)
-    created = 0
-    skipped = 0
-    failed = 0
+    created = skipped = failed = 0
 
     async with httpx.AsyncClient(timeout=30.0) as hc:
-        # 1) Listar plantillas existentes en Meta para detectar duplicados
-        existing_names = set()
-        try:
-            r = await hc.get(
-                f"https://graph.facebook.com/v21.0/{waba_id}/message_templates",
-                params={"fields": "name,status", "limit": 200},
-                headers={"Authorization": f"Bearer {access_token}"},
+        existing_names = await _fetch_existing_meta_templates(hc, waba_id, access_token)
+        for item in body.items:
+            result = await _sync_single_template_item(
+                hc, item, waba_id, access_token, existing_names, body.force_replace, existing_templates_state,
             )
-            if r.status_code < 400:
-                for tpl in (r.json().get("data") or []):
-                    existing_names.add(tpl.get("name"))
-        except Exception:
-            pass
-
-        for it in body.items:
-            tpl_name = f"waflow_{it.flow_key}_{it.msg_id}".lower()
-            tpl_name = _re.sub(r"[^a-z0-9_]", "_", tpl_name)[:512]
-
-            # Skip si existe y no hay force_replace
-            if tpl_name in existing_names and not body.force_replace:
-                results.append({"msg_key": it.msg_key, "template_name": tpl_name, "ok": True, "status": "skipped", "reason": "Ya existe en Meta"})
+            results.append(result)
+            status = result.get("status")
+            if status == "created":
+                created += 1
+            elif status == "skipped":
                 skipped += 1
-                continue
-
-            # Categorizar con LLM
-            category = await _categorize_copy_llm(it.copy_text)
-
-            # Strip emojis defensivo (segunda capa tras frontend)
-            copy_clean = strip_emojis(it.copy_text)
-
-            # Convertir variables
-            body_text, var_names = _convert_vars_to_meta_placeholders(copy_clean)
-
-            # Truncar a 1024 chars (límite Meta)
-            if len(body_text) > 1024:
-                body_text = body_text[:1021] + "..."
-
-            components: List[Dict[str, Any]] = []
-
-            # Header media si hay creative_url pública (skip /api/ locales porque Meta no puede acceder)
-            header_example = None
-            if it.creative_url and it.creative_url.startswith(("http://", "https://")) and "/api/intake/file/" not in it.creative_url:
-                # Determinar tipo por extensión simple
-                url_lower = it.creative_url.lower()
-                if any(url_lower.endswith(x) for x in [".jpg", ".jpeg", ".png", ".webp"]):
-                    components.append({
-                        "type": "HEADER", "format": "IMAGE",
-                        "example": {"header_handle": [it.creative_url]},
-                    })
-                elif any(url_lower.endswith(x) for x in [".mp4", ".mov"]):
-                    components.append({
-                        "type": "HEADER", "format": "VIDEO",
-                        "example": {"header_handle": [it.creative_url]},
-                    })
-                elif url_lower.endswith(".pdf"):
-                    components.append({
-                        "type": "HEADER", "format": "DOCUMENT",
-                        "example": {"header_handle": [it.creative_url]},
-                    })
-
-            # Body
-            body_component: Dict[str, Any] = {"type": "BODY", "text": body_text}
-            if var_names:
-                body_component["example"] = {"body_text": [["ejemplo_" + v.lower() for v in var_names]]}
-            components.append(body_component)
-
-            # Footer fijo con marca
-            components.append({"type": "FOOTER", "text": "Powered by WAFLOW"})
-
-            # Buttons si aplica
-            btns = _parse_template_buttons(it.botones or "")
-            if btns:
-                components.append({"type": "BUTTONS", "buttons": btns})
-
-            payload = {
-                "name": tpl_name,
-                "language": "es",
-                "category": category,
-                "components": components,
-            }
-
-            # Delete si force_replace y existe
-            if body.force_replace and tpl_name in existing_names:
-                try:
-                    await hc.delete(
-                        f"https://graph.facebook.com/v21.0/{waba_id}/message_templates",
-                        params={"name": tpl_name},
-                        headers={"Authorization": f"Bearer {access_token}"},
-                    )
-                except Exception:
-                    pass
-
-            # Crear
-            try:
-                r = await hc.post(
-                    f"https://graph.facebook.com/v21.0/{waba_id}/message_templates",
-                    json=payload,
-                    headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
-                )
-                data = r.json() if r.content else {}
-                if r.status_code < 400:
-                    meta_id = data.get("id")
-                    meta_status = data.get("status") or "PENDING"
-                    results.append({
-                        "msg_key": it.msg_key, "template_name": tpl_name,
-                        "ok": True, "status": "created",
-                        "meta_id": meta_id, "meta_status": meta_status, "category": category,
-                        "params_mapping": var_names,
-                    })
-                    # Persistir en templatesByMsg
-                    existing_templates_state[it.msg_key] = {
-                        "isTemplate": True, "auto": False,
-                        "name": tpl_name, "language": "es", "category": category,
-                        "status": meta_status, "meta_id": meta_id,
-                        "params_mapping": var_names, "synced_at": datetime.now(timezone.utc).isoformat(),
-                    }
-                    created += 1
-                else:
-                    err_msg = (data.get("error") or {}).get("message") or str(data)[:300]
-                    results.append({"msg_key": it.msg_key, "template_name": tpl_name, "ok": False, "status": "error", "error": err_msg})
-                    failed += 1
-            except Exception as e:
-                results.append({"msg_key": it.msg_key, "template_name": tpl_name, "ok": False, "status": "error", "error": str(e)[:300]})
+            else:
                 failed += 1
 
-    # Guardar estado actualizado
     await _write_storage(f"wa_editor:p:{body.project_id}:templates", existing_templates_state)
+    return {"ok": True, "total": len(body.items), "created": created, "skipped": skipped, "failed": failed, "results": results}
 
-    return {"ok": True, "total": total, "created": created, "skipped": skipped, "failed": failed, "results": results}
+
+async def _fetch_waba_templates_full(hc: httpx.AsyncClient, waba_id: str, access_token: str) -> Dict[str, Dict[str, Any]]:
+    """Devuelve dict {name: tpl_data} con status/rejected_reason/category/id desde Meta."""
+    try:
+        r = await hc.get(
+            f"https://graph.facebook.com/v21.0/{waba_id}/message_templates",
+            params={"fields": "name,status,rejected_reason,category,id", "limit": 200},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Meta API error: {e}")
+    if r.status_code >= 400:
+        err = r.json().get("error", {}).get("message", r.text[:200])
+        raise HTTPException(status_code=r.status_code, detail=f"Meta API: {err}")
+    return {tpl.get("name"): tpl for tpl in (r.json().get("data") or []) if tpl.get("name")}
+
+
+def _merge_template_status(tpl_info: Dict[str, Any], meta_tpl: Dict[str, Any]) -> bool:
+    """Aplica el status de Meta sobre tpl_info in-place. Devuelve True si el status cambió."""
+    new_status = meta_tpl.get("status", tpl_info.get("status"))
+    changed = new_status != tpl_info.get("status")
+    tpl_info["status"] = new_status
+    tpl_info["meta_id"] = meta_tpl.get("id", tpl_info.get("meta_id"))
+    tpl_info["rejected_reason"] = meta_tpl.get("rejected_reason")
+    tpl_info["last_status_check"] = datetime.now(timezone.utc).isoformat()
+    return changed
 
 
 @api_router.get("/meta/templates/status/{project_id}")
@@ -1596,33 +1700,17 @@ async def meta_templates_refresh_status(project_id: str, user: Dict[str, Any] = 
     templates_state = await _read_storage(f"wa_editor:p:{project_id}:templates") or {}
 
     async with httpx.AsyncClient(timeout=15.0) as hc:
-        try:
-            r = await hc.get(
-                f"https://graph.facebook.com/v21.0/{waba_id}/message_templates",
-                params={"fields": "name,status,rejected_reason,category,id", "limit": 200},
-                headers={"Authorization": f"Bearer {access_token}"},
-            )
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Meta API error: {e}")
-        if r.status_code >= 400:
-            err = r.json().get("error", {}).get("message", r.text[:200])
-            raise HTTPException(status_code=r.status_code, detail=f"Meta API: {err}")
-        meta_data = {tpl.get("name"): tpl for tpl in (r.json().get("data") or [])}
+        meta_data = await _fetch_waba_templates_full(hc, waba_id, access_token)
 
-    # Actualizar cada template con nuevo status
     updated = 0
     for msg_key, tpl_info in templates_state.items():
-        name = tpl_info.get("name") if isinstance(tpl_info, dict) else None
+        if not isinstance(tpl_info, dict):
+            continue
+        name = tpl_info.get("name")
         if not name or name not in meta_data:
             continue
-        meta_tpl = meta_data[name]
-        new_status = meta_tpl.get("status", tpl_info.get("status"))
-        if new_status != tpl_info.get("status"):
+        if _merge_template_status(tpl_info, meta_data[name]):
             updated += 1
-        tpl_info["status"] = new_status
-        tpl_info["meta_id"] = meta_tpl.get("id", tpl_info.get("meta_id"))
-        tpl_info["rejected_reason"] = meta_tpl.get("rejected_reason")
-        tpl_info["last_status_check"] = datetime.now(timezone.utc).isoformat()
         templates_state[msg_key] = tpl_info
 
     await _write_storage(f"wa_editor:p:{project_id}:templates", templates_state)
@@ -1654,6 +1742,60 @@ class FlowTestRunBody(BaseModel):
     items: List[FlowTestRunItem]
 
 
+def _build_flow_test_item_payload(item: Dict[str, Any], to: str) -> Dict[str, Any]:
+    components: List[Dict[str, Any]] = []
+    if item.get("header_media_url") and item.get("header_media_type"):
+        mt = (item["header_media_type"] or "").lower()
+        if mt in {"image", "video", "document"}:
+            components.append({
+                "type": "header",
+                "parameters": [{"type": mt, mt: {"link": item["header_media_url"]}}],
+            })
+    if item.get("params"):
+        components.append({
+            "type": "body",
+            "parameters": [{"type": "text", "text": strip_emojis(str(p))[:1024]} for p in item["params"]],
+        })
+    return {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "template",
+        "template": {
+            "name": item["template_name"],
+            "language": {"code": item.get("language") or "es"},
+            **({"components": components} if components else {}),
+        },
+    }
+
+
+async def _send_flow_test_item(
+    hc: httpx.AsyncClient, phone_id: str, access_token: str,
+    idx: int, item: Dict[str, Any], payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    base = {
+        "idx": idx, "msg_key": item["msg_key"], "template": item["template_name"],
+        "at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        r = await hc.post(
+            f"https://graph.facebook.com/v21.0/{phone_id}/messages",
+            json=payload,
+            headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+        )
+        data = r.json() if r.content else {}
+        if r.status_code < 400:
+            return {**base, "ok": True, "message_id": (data.get("messages") or [{}])[0].get("id")}
+        err_msg = (data.get("error") or {}).get("message") or str(data)[:200]
+        return {**base, "ok": False, "error": err_msg}
+    except Exception as e:
+        return {**base, "ok": False, "error": f"Red: {str(e)[:200]}"}
+
+
+async def _is_flow_test_cancelled(run_id: str) -> bool:
+    current = await db.flow_test_runs.find_one({"run_id": run_id}, {"status": 1, "_id": 0})
+    return bool(current and current.get("status") == "cancelled")
+
+
 async def _flow_test_run_task(run_id: str):
     """Background: itera los mensajes y los envía a Meta con sleep entre ellos."""
     rec = await db.flow_test_runs.find_one({"run_id": run_id})
@@ -1666,66 +1808,16 @@ async def _flow_test_run_task(run_id: str):
     to = rec["to_phone"]
 
     async with httpx.AsyncClient(timeout=20.0) as hc:
-        for idx, it in enumerate(items):
-            # Check if cancelled
-            current = await db.flow_test_runs.find_one({"run_id": run_id}, {"status": 1, "_id": 0})
-            if current and current.get("status") == "cancelled":
+        for idx, item in enumerate(items):
+            if await _is_flow_test_cancelled(run_id):
                 await db.flow_test_runs.update_one(
                     {"run_id": run_id},
                     {"$set": {"finished_at": datetime.now(timezone.utc).isoformat()}},
                 )
                 return
 
-            components: List[Dict[str, Any]] = []
-            if it.get("header_media_url") and it.get("header_media_type"):
-                mt = (it["header_media_type"] or "").lower()
-                if mt in {"image", "video", "document"}:
-                    components.append({
-                        "type": "header",
-                        "parameters": [{"type": mt, mt: {"link": it["header_media_url"]}}],
-                    })
-            if it.get("params"):
-                components.append({
-                    "type": "body",
-                    "parameters": [{"type": "text", "text": strip_emojis(str(p))[:1024]} for p in it["params"]],
-                })
-            payload = {
-                "messaging_product": "whatsapp",
-                "to": to,
-                "type": "template",
-                "template": {
-                    "name": it["template_name"],
-                    "language": {"code": it.get("language") or "es"},
-                    **({"components": components} if components else {}),
-                },
-            }
-            item_result: Dict[str, Any]
-            try:
-                r = await hc.post(
-                    f"https://graph.facebook.com/v21.0/{phone_id}/messages",
-                    json=payload,
-                    headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
-                )
-                data = r.json() if r.content else {}
-                if r.status_code < 400:
-                    item_result = {
-                        "idx": idx, "msg_key": it["msg_key"], "template": it["template_name"],
-                        "ok": True, "message_id": (data.get("messages") or [{}])[0].get("id"),
-                        "at": datetime.now(timezone.utc).isoformat(),
-                    }
-                else:
-                    err_msg = (data.get("error") or {}).get("message") or str(data)[:200]
-                    item_result = {
-                        "idx": idx, "msg_key": it["msg_key"], "template": it["template_name"],
-                        "ok": False, "error": err_msg,
-                        "at": datetime.now(timezone.utc).isoformat(),
-                    }
-            except Exception as e:
-                item_result = {
-                    "idx": idx, "msg_key": it["msg_key"], "template": it["template_name"],
-                    "ok": False, "error": f"Red: {str(e)[:200]}",
-                    "at": datetime.now(timezone.utc).isoformat(),
-                }
+            payload = _build_flow_test_item_payload(item, to)
+            item_result = await _send_flow_test_item(hc, phone_id, access_token, idx, item, payload)
 
             await db.flow_test_runs.update_one(
                 {"run_id": run_id},
@@ -1735,7 +1827,6 @@ async def _flow_test_run_task(run_id: str):
                 },
             )
 
-            # Sleep entre mensajes (no después del último)
             if idx < len(items) - 1:
                 await _asyncio.sleep(speedup)
 
@@ -1821,100 +1912,88 @@ class AuthCallbackBody(BaseModel):
     session_id: str
 
 
-@api_router.post("/auth/callback")
-async def auth_callback(body: AuthCallbackBody, response: FastAPIResponse):
-    """Procesa session_id de Emergent Auth, crea/actualiza user, setea cookie."""
-    # Consultar session-data de Emergent
+async def _fetch_emergent_session_data(session_id: str) -> Dict[str, Any]:
+    """Consulta session-data de Emergent Auth. Lanza HTTPException en error."""
     try:
         async with httpx.AsyncClient(timeout=12.0) as hc:
             r = await hc.get(
                 "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
-                headers={"X-Session-ID": body.session_id},
+                headers={"X-Session-ID": session_id},
             )
         if r.status_code >= 400:
             raise HTTPException(status_code=401, detail="session_id inválido o expirado")
-        data = r.json()
+        return r.json()
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Error Emergent Auth: {e}")
 
-    email = (data.get("email") or "").strip().lower()
-    name = data.get("name") or "Sin nombre"
-    picture = data.get("picture")
-    session_token = data.get("session_token")
-    google_id = data.get("id")
-    if not email or not session_token:
-        raise HTTPException(status_code=400, detail="Respuesta Emergent Auth incompleta")
 
-    # Buscar usuario existente por email
-    existing = await db.users.find_one({"email": email}, {"_id": 0})
+def _get_initial_admin_emails() -> set:
+    raw = os.environ.get("INITIAL_ADMIN_EMAILS", "") or ""
+    return {e.strip().lower() for e in raw.split(",") if e.strip()}
 
-    # Política de acceso:
-    # 0) INITIAL_ADMIN_EMAILS (env): bypass allowlist + force role=admin (idempotente).
-    # 1) Si ya existe como usuario, OK.
-    # 2) Si no existe, primer usuario (sin users en BD) → se convierte en admin automáticamente.
-    # 3) Si no existe y hay users, su email debe estar en db.auth_allowlist, si no → 403.
-    initial_admins_raw = os.environ.get("INITIAL_ADMIN_EMAILS", "") or ""
-    initial_admins = {e.strip().lower() for e in initial_admins_raw.split(",") if e.strip()}
-    is_initial_admin = email in initial_admins
 
-    if not existing:
-        user_count = await db.users.count_documents({})
-        if is_initial_admin or user_count == 0:
-            role = "admin"
-            invited_by = None
-        else:
-            allow_entry = await db.auth_allowlist.find_one({"email": email}, {"_id": 0})
-            if not allow_entry:
-                raise HTTPException(status_code=403, detail="Tu email no está autorizado. Pide al admin que te invite.")
-            role = allow_entry.get("role", "editor")
-            invited_by = allow_entry.get("invited_by")
+async def _resolve_new_user_role(email: str, is_initial_admin: bool) -> tuple:
+    """Decide rol y invited_by para un email que aún no existe en db.users. Puede lanzar 403."""
+    if is_initial_admin:
+        return "admin", None
+    user_count = await db.users.count_documents({})
+    if user_count == 0:
+        return "admin", None
+    allow_entry = await db.auth_allowlist.find_one({"email": email}, {"_id": 0})
+    if not allow_entry:
+        raise HTTPException(status_code=403, detail="Tu email no está autorizado. Pide al admin que te invite.")
+    return allow_entry.get("role", "editor"), allow_entry.get("invited_by")
 
-        user_id = f"user_{uuid.uuid4().hex[:12]}"
-        now = datetime.now(timezone.utc)
-        new_user = {
-            "user_id": user_id,
-            "email": email,
-            "name": name,
-            "google_id": google_id,
-            "avatar_url": picture,
-            "role": role,
-            "workspace_id": "default",
-            "created_at": now,
-            "invited_by": invited_by,
-        }
-        await db.users.insert_one(new_user)
-        existing = {**new_user}
-        existing.pop("_id", None)
-    else:
-        # actualizar avatar/name por si cambió en Google; promociona a admin si está en INITIAL_ADMIN_EMAILS
-        update_set = {
-            "name": name,
-            "avatar_url": picture,
-            "google_id": google_id,
-            "last_login_at": datetime.now(timezone.utc),
-        }
-        if is_initial_admin and existing.get("role") != "admin":
-            update_set["role"] = "admin"
-            existing["role"] = "admin"
-        await db.users.update_one(
-            {"user_id": existing["user_id"]},
-            {"$set": update_set},
-        )
-        existing["name"] = name
-        existing["avatar_url"] = picture
 
-    # Guardar sesión
+async def _create_user(email: str, name: str, picture: Optional[str], google_id: Optional[str], role: str, invited_by: Optional[str]) -> Dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    new_user = {
+        "user_id": f"user_{uuid.uuid4().hex[:12]}",
+        "email": email,
+        "name": name,
+        "google_id": google_id,
+        "avatar_url": picture,
+        "role": role,
+        "workspace_id": "default",
+        "created_at": now,
+        "invited_by": invited_by,
+    }
+    await db.users.insert_one(new_user)
+    existing = {**new_user}
+    existing.pop("_id", None)
+    return existing
+
+
+async def _update_existing_user(existing: Dict[str, Any], name: str, picture: Optional[str], google_id: Optional[str], is_initial_admin: bool) -> Dict[str, Any]:
+    """Refresca datos del usuario desde Google y promociona a admin si aplica."""
+    update_set = {
+        "name": name,
+        "avatar_url": picture,
+        "google_id": google_id,
+        "last_login_at": datetime.now(timezone.utc),
+    }
+    if is_initial_admin and existing.get("role") != "admin":
+        update_set["role"] = "admin"
+        existing["role"] = "admin"
+    await db.users.update_one({"user_id": existing["user_id"]}, {"$set": update_set})
+    existing["name"] = name
+    existing["avatar_url"] = picture
+    return existing
+
+
+async def _persist_user_session(user_id: str, session_token: str) -> None:
     expires_at = datetime.now(timezone.utc) + timedelta(days=SESSION_DURATION_DAYS)
     await db.user_sessions.insert_one({
         "session_token": session_token,
-        "user_id": existing["user_id"],
+        "user_id": user_id,
         "created_at": datetime.now(timezone.utc),
         "expires_at": expires_at,
     })
 
-    # Cookie httpOnly
+
+def _set_session_cookie(response: FastAPIResponse, session_token: str) -> None:
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=session_token,
@@ -1924,6 +2003,32 @@ async def auth_callback(body: AuthCallbackBody, response: FastAPIResponse):
         path="/",
         max_age=SESSION_DURATION_DAYS * 24 * 3600,
     )
+
+
+@api_router.post("/auth/callback")
+async def auth_callback(body: AuthCallbackBody, response: FastAPIResponse):
+    """Procesa session_id de Emergent Auth, crea/actualiza user, setea cookie."""
+    data = await _fetch_emergent_session_data(body.session_id)
+
+    email = (data.get("email") or "").strip().lower()
+    name = data.get("name") or "Sin nombre"
+    picture = data.get("picture")
+    session_token = data.get("session_token")
+    google_id = data.get("id")
+    if not email or not session_token:
+        raise HTTPException(status_code=400, detail="Respuesta Emergent Auth incompleta")
+
+    is_initial_admin = email in _get_initial_admin_emails()
+
+    existing = await db.users.find_one({"email": email}, {"_id": 0})
+    if not existing:
+        role, invited_by = await _resolve_new_user_role(email, is_initial_admin)
+        existing = await _create_user(email, name, picture, google_id, role, invited_by)
+    else:
+        existing = await _update_existing_user(existing, name, picture, google_id, is_initial_admin)
+
+    await _persist_user_session(existing["user_id"], session_token)
+    _set_session_cookie(response, session_token)
 
     existing.pop("created_at", None)
     return {
