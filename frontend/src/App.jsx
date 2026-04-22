@@ -10,6 +10,8 @@ import {
 } from "lucide-react";
 
 import { ConfirmProvider, useConfirm } from "./hooks/useConfirm";
+import { AuthProvider, useAuth } from "./hooks/useAuth";
+import LoginWall, { AuthCallback } from "./pages/LoginWall";
 import PublicReviewPage from "./pages/PublicReviewPage";
 import PublicIntakePage from "./pages/PublicIntakePage";
 
@@ -1656,6 +1658,135 @@ function MeDialog({ me, onSave, onClose }) {
   );
 }
 
+// TeamDialog — admin gestiona allowlist + ve usuarios del workspace.
+function TeamDialog({ user, onClose }) {
+  const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
+  const [team, setTeam] = useState({ users: [], pending: [] });
+  const [loading, setLoading] = useState(true);
+  const [email, setEmail] = useState("");
+  const [role, setRole] = useState("editor");
+  const [saving, setSaving] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const r = await fetch(`${API}/auth/team`, { credentials: "include" });
+      if (r.ok) setTeam(await r.json());
+    } catch {}
+    setLoading(false);
+  };
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const invite = async () => {
+    if (!email.trim()) return;
+    setSaving(true);
+    try {
+      const r = await fetch(`${API}/auth/invite`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ email: email.trim(), role }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || "Error");
+      setEmail("");
+      await load();
+    } catch (e) {
+      alert("Error invitando: " + e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const removePending = async (em) => {
+    try {
+      await fetch(`${API}/auth/invite?email=${encodeURIComponent(em)}`, { method: "DELETE", credentials: "include" });
+      await load();
+    } catch {}
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full overflow-hidden" onClick={e => e.stopPropagation()} data-testid="team-dialog">
+        <div className="px-5 py-3 bg-gradient-to-r from-stone-50 to-stone-100 border-b border-stone-200 flex items-center justify-between">
+          <div>
+            <div className="text-sm font-bold text-stone-900">Equipo del workspace</div>
+            <div className="text-[11px] text-stone-500">Solo tú (admin {user?.email}) puedes invitar a nuevos usuarios.</div>
+          </div>
+          <button onClick={onClose} className="text-stone-500 hover:text-stone-900">✕</button>
+        </div>
+        <div className="p-5 space-y-4 max-h-[75vh] overflow-y-auto">
+          <div>
+            <div className="text-[11px] font-semibold text-stone-700 uppercase tracking-widest mb-2">Invitar a alguien</div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <input type="email" value={email} onChange={e => setEmail(e.target.value)}
+                placeholder="email@empresa.com"
+                data-testid="team-invite-email"
+                className="flex-1 min-w-[200px] px-3 py-2 text-sm border border-stone-300 rounded-md focus:outline-none focus:border-stone-900" />
+              <select value={role} onChange={e => setRole(e.target.value)}
+                data-testid="team-invite-role"
+                className="px-3 py-2 text-sm border border-stone-300 rounded-md">
+                <option value="editor">Editor</option>
+                <option value="viewer">Viewer</option>
+                <option value="admin">Admin</option>
+              </select>
+              <button onClick={invite} disabled={saving || !email}
+                data-testid="team-invite-btn"
+                className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-semibold bg-stone-900 text-white rounded-md hover:bg-stone-700 disabled:opacity-50">
+                {saving ? "..." : "Invitar"}
+              </button>
+            </div>
+            <div className="text-[10.5px] text-stone-500 mt-1.5">
+              💡 La persona podrá entrar con su Google. Su email debe coincidir.
+            </div>
+          </div>
+
+          <div>
+            <div className="text-[11px] font-semibold text-stone-700 uppercase tracking-widest mb-2">Miembros activos ({team.users.length})</div>
+            {loading ? <div className="text-[12px] text-stone-500">Cargando...</div> : (
+              <div className="space-y-1.5">
+                {team.users.map(u => (
+                  <div key={u.user_id} className="flex items-center gap-2 p-2 bg-stone-50 rounded border border-stone-200">
+                    {u.avatar_url ? <img src={u.avatar_url} alt="" className="w-6 h-6 rounded-full" referrerPolicy="no-referrer" />
+                      : <span className="inline-flex w-6 h-6 items-center justify-center rounded-full bg-indigo-600 text-white text-[10px] font-bold">{u.name?.[0]?.toUpperCase() || "?"}</span>}
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[13px] font-medium text-stone-900 truncate">{u.name}</div>
+                      <div className="text-[10.5px] text-stone-500 truncate">{u.email}</div>
+                    </div>
+                    <span className={`text-[10px] font-semibold uppercase tracking-widest px-2 py-0.5 rounded ${u.role === "admin" ? "bg-amber-100 text-amber-800" : u.role === "viewer" ? "bg-stone-200 text-stone-700" : "bg-indigo-100 text-indigo-800"}`}>
+                      {u.role}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {team.pending.length > 0 && (
+            <div>
+              <div className="text-[11px] font-semibold text-amber-700 uppercase tracking-widest mb-2">Pendientes de activar ({team.pending.length})</div>
+              <div className="space-y-1.5">
+                {team.pending.map(p => (
+                  <div key={p.email} className="flex items-center gap-2 p-2 bg-amber-50 rounded border border-amber-200">
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[12.5px] text-stone-900 truncate">{p.email}</div>
+                      <div className="text-[10px] text-stone-500">Rol: {p.role} · aún no ha entrado</div>
+                    </div>
+                    <button onClick={() => removePending(p.email)}
+                      data-testid={`team-remove-pending-${p.email}`}
+                      className="text-[10px] text-red-700 hover:text-red-900">Quitar</button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 function ProjectDialog({ project, onSave, onClose, isNew, me }) {
   const [draft, setDraft] = useState(project || newProject({ created_by: me || null }));
   return (
@@ -1727,7 +1858,7 @@ function ProjectDialog({ project, onSave, onClose, isNew, me }) {
   );
 }
 
-function ProjectsDashboard({ projects, onOpen, onCreate, onEdit, onDuplicate, onArchive, onDelete, me, onEditMe }) {
+function ProjectsDashboard({ projects, onOpen, onCreate, onEdit, onDuplicate, onArchive, onDelete, me, user, onLogout, onTeam }) {
   const [filter, setFilter] = useState("active"); // active | archived | all
   const [q, setQ] = useState("");
 
@@ -1758,15 +1889,30 @@ function ProjectsDashboard({ projects, onOpen, onCreate, onEdit, onDuplicate, on
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <button onClick={onEditMe}
-              data-testid="connected-user-dashboard"
-              title="Clic para cambiar el nombre del usuario"
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-indigo-800 bg-indigo-50 border border-indigo-200 rounded-md hover:bg-indigo-100">
-              <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-indigo-600 text-white text-[10px] font-bold">
-                {(me || "?").charAt(0).toUpperCase()}
+            {user?.role === "admin" && (
+              <button onClick={onTeam}
+                data-testid="team-manage-btn"
+                title="Gestionar equipo e invitaciones"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-stone-700 border border-stone-300 rounded-md hover:border-stone-900">
+                👥 Equipo
+              </button>
+            )}
+            <div data-testid="connected-user-dashboard"
+              title={user?.email}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-indigo-800 bg-indigo-50 border border-indigo-200 rounded-md">
+              {user?.avatar_url
+                ? <img src={user.avatar_url} alt="" className="w-5 h-5 rounded-full" referrerPolicy="no-referrer" />
+                : <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-indigo-600 text-white text-[10px] font-bold">{(me || "?").charAt(0).toUpperCase()}</span>}
+              <strong>{me || "sin nombre"}</strong>
+              <span className={`text-[9px] font-semibold uppercase tracking-widest ml-1 px-1 py-0.5 rounded ${user?.role === "admin" ? "bg-amber-200 text-amber-900" : "bg-stone-200 text-stone-700"}`}>
+                {user?.role || "—"}
               </span>
-              Conectado · <strong>{me || "sin nombre"}</strong>
-              <Edit3 size={10} className="opacity-60" />
+            </div>
+            <button onClick={onLogout}
+              data-testid="logout-btn"
+              title="Cerrar sesión"
+              className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-stone-600 border border-stone-300 rounded-md hover:bg-stone-100">
+              Salir
             </button>
             <button onClick={onCreate}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-stone-900 text-white rounded-md hover:bg-stone-700">
@@ -5677,29 +5823,26 @@ function ProjectWorkspace({ project, onBack, me, onUpdateProject }) {
 // ====================================================================
 function MainApp() {
   const askConfirm = useConfirm();
+  const { user, logout } = useAuth();
   const [projects, setProjects] = useState([]);
   const [activeId, setActiveId] = useState(null);
-  const [me, setMe] = useState("");
   const [showProjectDialog, setShowProjectDialog] = useState(null); // { isNew, project }
-  const [showMeDialog, setShowMeDialog] = useState(false);
+  const [showTeamDialog, setShowTeamDialog] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const me = user?.name || "";
 
   useEffect(() => {
     (async () => {
       const ps = await loadFromStorage(K_PROJECTS);
       const act = await loadFromStorage(K_ACTIVE);
-      const m = await loadFromStorage(K_ME, false); // me es local (no compartido)
       if (ps) setProjects(ps);
       if (act) setActiveId(act);
-      if (m) setMe(m);
-      else setShowMeDialog(true); // pedir nombre si no hay
       setLoaded(true);
     })();
   }, []);
 
   useEffect(() => { if (loaded) saveToStorage(K_PROJECTS, projects); }, [projects, loaded]);
   useEffect(() => { if (loaded) saveToStorage(K_ACTIVE, activeId); }, [activeId, loaded]);
-  useEffect(() => { if (loaded && me) saveToStorage(K_ME, me, false); }, [me, loaded]);
 
   const activeProject = projects.find(p => p.id === activeId);
 
@@ -5757,7 +5900,9 @@ function MainApp() {
           onArchive={handleArchive}
           onDelete={handleDelete}
           me={me}
-          onEditMe={() => setShowMeDialog(true)}
+          user={user}
+          onLogout={logout}
+          onTeam={() => setShowTeamDialog(true)}
         />
       )}
 
@@ -5771,23 +5916,54 @@ function MainApp() {
         />
       )}
 
-      {showMeDialog && (
-        <MeDialog me={me} onSave={n => { setMe(n); setShowMeDialog(false); }} onClose={() => setShowMeDialog(false)} />
+      {showTeamDialog && (
+        <TeamDialog user={user} onClose={() => setShowTeamDialog(false)} />
       )}
     </>
   );
 }
 
 // Router manual: /review/:token → PublicReviewPage, /intake/:token → PublicIntakePage, resto → MainApp
+// Gate auth: si URL tiene #session_id, procesar AuthCallback; sino LoginWall/MainApp según auth.
+function AuthGatedApp() {
+  const { user, loading } = useAuth();
+  const hasSessionId = typeof window !== "undefined" && window.location.hash?.includes("session_id=");
+  if (hasSessionId) return <AuthCallback />;
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-stone-50 flex items-center justify-center" style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
+        <div className="text-sm text-stone-500">Cargando...</div>
+      </div>
+    );
+  }
+  if (!user) return <LoginWall />;
+  return <MainApp />;
+}
+
 export default function App() {
   const path = typeof window !== "undefined" ? window.location.pathname : "";
   const reviewMatch = path.match(/^\/review\/([A-Za-z0-9_-]+)\/?$/);
   const intakeMatch = path.match(/^\/intake\/([A-Za-z0-9_-]+)\/?$/);
+  // Rutas públicas: no requieren auth
+  if (reviewMatch) {
+    return (
+      <ConfirmProvider>
+        <PublicReviewPage token={reviewMatch[1]} />
+      </ConfirmProvider>
+    );
+  }
+  if (intakeMatch) {
+    return (
+      <ConfirmProvider>
+        <PublicIntakePage token={intakeMatch[1]} />
+      </ConfirmProvider>
+    );
+  }
   return (
-    <ConfirmProvider>
-      {reviewMatch ? <PublicReviewPage token={reviewMatch[1]} />
-        : intakeMatch ? <PublicIntakePage token={intakeMatch[1]} />
-        : <MainApp />}
-    </ConfirmProvider>
+    <AuthProvider>
+      <ConfirmProvider>
+        <AuthGatedApp />
+      </ConfirmProvider>
+    </AuthProvider>
   );
 }

@@ -1,14 +1,14 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Query
+from fastapi import FastAPI, APIRouter, HTTPException, Query, Request, Response as FastAPIResponse, Depends
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
 from pathlib import Path
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional, Any, Dict
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import httpx
 import re as _re
 
@@ -1719,6 +1719,235 @@ async def cancel_flow_test_run(run_id: str):
     if r.matched_count == 0:
         raise HTTPException(status_code=404, detail="Run no encontrado o ya terminado")
     return {"ok": True}
+
+
+# ============================================================
+# AUTH — Emergent Google Auth
+# REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
+# Flow:
+#   1) Frontend redirects to https://auth.emergentagent.com/?redirect=<origin>/
+#   2) User returns with #session_id=... → frontend POST /api/auth/callback
+#   3) Backend GETs https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data
+#   4) Backend creates/updates user, stores session in db.user_sessions, sets httpOnly cookie
+#   5) Frontend calls /api/auth/me on load to check session
+# ============================================================
+SESSION_COOKIE_NAME = "waflow_session"
+SESSION_DURATION_DAYS = 7
+
+
+class AuthCallbackBody(BaseModel):
+    session_id: str
+
+
+async def _get_session_from_request(request: Request) -> Optional[Dict[str, Any]]:
+    """Extrae session_token de cookie (primero) o Authorization header (fallback).
+    Valida existencia, expiración, y devuelve el user doc sin _id."""
+    token = request.cookies.get(SESSION_COOKIE_NAME)
+    if not token:
+        auth = request.headers.get("authorization") or ""
+        if auth.lower().startswith("bearer "):
+            token = auth.split(" ", 1)[1].strip()
+    if not token:
+        return None
+    session = await db.user_sessions.find_one({"session_token": token}, {"_id": 0})
+    if not session:
+        return None
+    expires_at = session.get("expires_at")
+    if isinstance(expires_at, str):
+        try:
+            expires_at = datetime.fromisoformat(expires_at)
+        except Exception:
+            return None
+    if expires_at and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at and expires_at < datetime.now(timezone.utc):
+        await db.user_sessions.delete_one({"session_token": token})
+        return None
+    user_doc = await db.users.find_one({"user_id": session["user_id"]}, {"_id": 0})
+    return user_doc
+
+
+async def require_user(request: Request) -> Dict[str, Any]:
+    user = await _get_session_from_request(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="No autenticado")
+    return user
+
+
+async def require_admin(request: Request) -> Dict[str, Any]:
+    user = await require_user(request)
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Solo el admin puede hacer esta acción")
+    return user
+
+
+@api_router.post("/auth/callback")
+async def auth_callback(body: AuthCallbackBody, response: FastAPIResponse):
+    """Procesa session_id de Emergent Auth, crea/actualiza user, setea cookie."""
+    # Consultar session-data de Emergent
+    try:
+        async with httpx.AsyncClient(timeout=12.0) as hc:
+            r = await hc.get(
+                "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
+                headers={"X-Session-ID": body.session_id},
+            )
+        if r.status_code >= 400:
+            raise HTTPException(status_code=401, detail="session_id inválido o expirado")
+        data = r.json()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Error Emergent Auth: {e}")
+
+    email = (data.get("email") or "").strip().lower()
+    name = data.get("name") or "Sin nombre"
+    picture = data.get("picture")
+    session_token = data.get("session_token")
+    google_id = data.get("id")
+    if not email or not session_token:
+        raise HTTPException(status_code=400, detail="Respuesta Emergent Auth incompleta")
+
+    # Buscar usuario existente por email
+    existing = await db.users.find_one({"email": email}, {"_id": 0})
+
+    # Política de acceso:
+    # 1) Si ya existe como usuario, OK.
+    # 2) Si no existe, primer usuario (sin users en BD) → se convierte en admin automáticamente.
+    # 3) Si no existe y hay users, su email debe estar en db.auth_allowlist, si no → 403.
+    if not existing:
+        user_count = await db.users.count_documents({})
+        if user_count == 0:
+            role = "admin"
+            invited_by = None
+        else:
+            allow_entry = await db.auth_allowlist.find_one({"email": email}, {"_id": 0})
+            if not allow_entry:
+                raise HTTPException(status_code=403, detail="Tu email no está autorizado. Pide al admin que te invite.")
+            role = allow_entry.get("role", "editor")
+            invited_by = allow_entry.get("invited_by")
+
+        user_id = f"user_{uuid.uuid4().hex[:12]}"
+        now = datetime.now(timezone.utc)
+        new_user = {
+            "user_id": user_id,
+            "email": email,
+            "name": name,
+            "google_id": google_id,
+            "avatar_url": picture,
+            "role": role,
+            "workspace_id": "default",
+            "created_at": now,
+            "invited_by": invited_by,
+        }
+        await db.users.insert_one(new_user)
+        existing = {**new_user}
+        existing.pop("_id", None)
+    else:
+        # actualizar avatar/name por si cambió en Google
+        await db.users.update_one(
+            {"user_id": existing["user_id"]},
+            {"$set": {"name": name, "avatar_url": picture, "google_id": google_id, "last_login_at": datetime.now(timezone.utc)}},
+        )
+        existing["name"] = name
+        existing["avatar_url"] = picture
+
+    # Guardar sesión
+    expires_at = datetime.now(timezone.utc) + timedelta(days=SESSION_DURATION_DAYS)
+    await db.user_sessions.insert_one({
+        "session_token": session_token,
+        "user_id": existing["user_id"],
+        "created_at": datetime.now(timezone.utc),
+        "expires_at": expires_at,
+    })
+
+    # Cookie httpOnly
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=session_token,
+        httponly=True,
+        secure=True,
+        samesite="none",
+        path="/",
+        max_age=SESSION_DURATION_DAYS * 24 * 3600,
+    )
+
+    existing.pop("created_at", None)
+    return {
+        "ok": True,
+        "user": {
+            "user_id": existing["user_id"],
+            "email": existing["email"],
+            "name": existing["name"],
+            "avatar_url": existing.get("avatar_url"),
+            "role": existing.get("role", "editor"),
+            "workspace_id": existing.get("workspace_id", "default"),
+        },
+    }
+
+
+@api_router.get("/auth/me")
+async def auth_me(user: Dict[str, Any] = Depends(require_user)):
+    return {
+        "user_id": user["user_id"],
+        "email": user["email"],
+        "name": user["name"],
+        "avatar_url": user.get("avatar_url"),
+        "role": user.get("role", "editor"),
+        "workspace_id": user.get("workspace_id", "default"),
+    }
+
+
+@api_router.post("/auth/logout")
+async def auth_logout(request: Request, response: FastAPIResponse):
+    token = request.cookies.get(SESSION_COOKIE_NAME)
+    if not token:
+        auth = request.headers.get("authorization") or ""
+        if auth.lower().startswith("bearer "):
+            token = auth.split(" ", 1)[1].strip()
+    if token:
+        await db.user_sessions.delete_one({"session_token": token})
+    response.delete_cookie(SESSION_COOKIE_NAME, path="/", samesite="none", secure=True)
+    return {"ok": True}
+
+
+class InviteBody(BaseModel):
+    email: EmailStr
+    role: str = "editor"  # editor|viewer|admin
+
+
+@api_router.post("/auth/invite")
+async def auth_invite(body: InviteBody, admin: Dict[str, Any] = Depends(require_admin)):
+    if body.role not in {"admin", "editor", "viewer"}:
+        raise HTTPException(status_code=400, detail="role debe ser admin, editor o viewer")
+    email_norm = str(body.email).strip().lower()
+    await db.auth_allowlist.update_one(
+        {"email": email_norm},
+        {"$set": {
+            "email": email_norm,
+            "role": body.role,
+            "invited_by": admin["user_id"],
+            "invited_at": datetime.now(timezone.utc).isoformat(),
+        }},
+        upsert=True,
+    )
+    return {"ok": True, "email": email_norm, "role": body.role}
+
+
+@api_router.get("/auth/team")
+async def auth_team(admin: Dict[str, Any] = Depends(require_admin)):
+    """Lista usuarios actuales + pendientes de activación (allowlist sin user creado)."""
+    users = await db.users.find({}, {"_id": 0, "google_id": 0}).to_list(length=500)
+    allow = await db.auth_allowlist.find({}, {"_id": 0}).to_list(length=500)
+    active_emails = {u["email"] for u in users}
+    pending = [a for a in allow if a["email"] not in active_emails]
+    return {"users": users, "pending": pending}
+
+
+@api_router.delete("/auth/invite")
+async def auth_invite_remove(email: str = Query(...), admin: Dict[str, Any] = Depends(require_admin)):
+    email_norm = email.strip().lower()
+    r = await db.auth_allowlist.delete_one({"email": email_norm})
+    return {"ok": True, "removed": r.deleted_count}
 
 
 # ============================================================

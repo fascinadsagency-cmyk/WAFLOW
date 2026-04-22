@@ -117,6 +117,17 @@ Editor colaborativo multi-proyecto de secuencias de mensajes de WhatsApp para ag
 - **ConnectionsPanel**: nuevo campo "Webhook deploy (🚀 Lanzar ahora)" (`n8nDeployWebhookUrl`)
 - **createSnapshot** ahora devuelve el ID del snapshot creado (necesario para pasarlo al wizard)
 
+### Iter 15 (22 feb 2026) — Auth real: Emergent Google Auth + multi-usuario
+**Motivo**: usuario reportó proyectos que "no se guardaban". Root cause: storage global sin aislamiento por usuario — cualquier sesión concurrente sobrescribía la lista. Solución: login + workspace compartido.
+**Decisiones del usuario**: (1a) Emergent Google Auth, (2b) workspace compartido, (3b) migrar existentes, (4b) solo admin invita, (5b) role+avatar.
+- **Backend**: 5 endpoints nuevos + middleware `require_user`/`require_admin`. `POST /auth/callback` (session_id → Emergent /session-data → crea user + cookie httpOnly 7d), `GET /auth/me`, `POST /auth/logout`, `POST /auth/invite` (admin), `GET /auth/team`, `DELETE /auth/invite`. Política: primer login = admin automático; siguientes requieren allowlist.
+- **Frontend** (nuevos): `src/hooks/useAuth.jsx` (AuthProvider + hook), `src/pages/LoginWall.jsx` (pantalla login + AuthCallback procesa `#session_id`).
+- **App.jsx**: `AuthGatedApp` orquesta LoginWall/MainApp. Rutas públicas `/review` y `/intake` bypass auth. ProjectsDashboard muestra avatar Google + rol + botones Equipo (admin) y Salir. `me` viene de `user.name`. Eliminada UI MeDialog.
+- **TeamDialog** inline: invitar email+rol, ver activos con avatar, ver pending con remove.
+- **Integration playbook**: consultado antes de implementar. Rules respetadas: no hardcode URLs, no redirects custom, cookies httpOnly/secure/samesite=none, session 7d.
+- **Docs**: `/app/auth_testing.md` y `/app/memory/test_credentials.md` actualizados.
+- **Testing iter-15**: compila limpio, 35/35 backend regresión OK, LoginWall smoke visual OK. **Pendiente validación E2E con Google real del usuario**.
+
 ### Iter 14 (21 feb 2026) — Visibilidad del usuario conectado y creador del proyecto
 - **Modelo `newProject`**: añadido campo `created_by` que se inyecta automáticamente con el valor de `me` (nombre del usuario conectado) al crear un proyecto nuevo. ProjectDialog recibe el prop `me` y lo pasa al default draft.
 - **ProjectsDashboard header**: nuevo badge `data-testid="connected-user-dashboard"` con avatar circular (inicial del nombre) + "Conectado · **nombre**" + icono Edit3. Estilo indigo consistente con la paleta de la app. Click abre el modal MeDialog para cambiar el nombre.
