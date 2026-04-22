@@ -84,3 +84,57 @@ export function parseButtons(str) {
   });
   return btns;
 }
+
+export function extractVarsUsed(text) {
+  if (!text) return [];
+  const matches = text.match(/\{([A-Z_][A-Z0-9_]*)\}/g) || [];
+  return [...new Set(matches.map(m => m.slice(1, -1)))];
+}
+
+// Regex para detectar emojis (Unicode property Extended_Pictographic + variation selectors + ZWJ).
+// Se usa para (a) bloquear entrada en el editor de copy de flujos Meta,
+// (b) marcar warnings en el Checker, y (c) strip defensivo antes de enviar a Meta.
+const EMOJI_RE = /[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}\u{2300}-\u{23FF}\u{FE00}-\u{FE0F}\u{200D}\u{20E3}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}\u{3000}-\u{303F}]/gu;
+
+export function stripEmojis(text) {
+  if (!text) return text;
+  // Quitar emojis + espacios duplicados resultantes + trim por línea
+  let out = text.replace(EMOJI_RE, "").replace(/[ \t]{2,}/g, " ").replace(/ +([,.!?;:])/g, "$1");
+  out = out.split("\n").map(line => line.replace(/[ \t]+$/g, "").replace(/^[ \t]+/g, "")).join("\n");
+  return out.trim();
+}
+
+export function hasEmojis(text) {
+  if (!text) return false;
+  return EMOJI_RE.test(text);
+}
+
+export function parseDayOffset(dia) {
+  if (!dia) return null;
+  const s = String(dia).trim().toUpperCase();
+  let m = s.match(/^D\s*-\s*(\d+)$/); if (m) return -parseInt(m[1], 10);
+  m = s.match(/^D\s*\+\s*(\d+)$/);    if (m) return parseInt(m[1], 10);
+  m = s.match(/^D[ÍI]A\s*(\d+)$/);    if (m) return parseInt(m[1], 10);
+  m = s.match(/^D(\d+)$/);            if (m) return parseInt(m[1], 10);
+  m = s.match(/^T\s*\+\s*(\d+)$/);    if (m) return parseInt(m[1], 10);
+  return null;
+}
+
+export function computeSkipCondition(flowKey, msg) {
+  const SKIP_FLOWS = ["pre_webinar_1a1", "broadcasts"];
+  const d = parseDayOffset(msg.dia);
+  if (!SKIP_FLOWS.includes(flowKey) || d === null || d >= 0) return null;
+  return {
+    type: "skip_if_registered_after", day_offset: d,
+    description: `No enviar si user.registered_at llega cuando ya ha pasado D${d} relativo al webinar`,
+    pseudocode: `IF (webinar_date - user.registered_at) < ${Math.abs(d)} days THEN SKIP`,
+    n8n_hint: `{{ $json.days_until_webinar >= ${Math.abs(d)} }}`,
+  };
+}
+
+export const RUNTIME_VARS = new Set([
+  "NOMBRE", "USER_ID", "EMAIL", "PHONE",
+  "RESPUESTA_MOTIVACION", "RESPUESTA_DOLOR", "RESPUESTA_OBJETIVO", "RESPUESTA_MIEDO",
+  "RESPUESTA_M3", "RESPUESTA_M4", "RESPUESTA_INGRESOS", "RESPUESTA_ESPECIFICA",
+  "RANGO_FACTURACION", "TITULO_GUIA_SEGUN_PERFIL"
+]);

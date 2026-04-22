@@ -25,6 +25,55 @@ api_router = APIRouter(prefix="/api")
 
 
 # ============================================================
+# AUTH HELPERS (movidos arriba para poder usarlos en Depends() de endpoints)
+# ============================================================
+SESSION_COOKIE_NAME = "waflow_session"
+SESSION_DURATION_DAYS = 7
+
+
+async def _get_session_from_request(request: Request) -> Optional[Dict[str, Any]]:
+    """Extrae session_token de cookie (primero) o Authorization header (fallback).
+    Valida existencia, expiración, y devuelve el user doc sin _id."""
+    token = request.cookies.get(SESSION_COOKIE_NAME)
+    if not token:
+        auth = request.headers.get("authorization") or ""
+        if auth.lower().startswith("bearer "):
+            token = auth.split(" ", 1)[1].strip()
+    if not token:
+        return None
+    session = await db.user_sessions.find_one({"session_token": token}, {"_id": 0})
+    if not session:
+        return None
+    expires_at = session.get("expires_at")
+    if isinstance(expires_at, str):
+        try:
+            expires_at = datetime.fromisoformat(expires_at)
+        except Exception:
+            return None
+    if expires_at and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at and expires_at < datetime.now(timezone.utc):
+        await db.user_sessions.delete_one({"session_token": token})
+        return None
+    user_doc = await db.users.find_one({"user_id": session["user_id"]}, {"_id": 0})
+    return user_doc
+
+
+async def require_user(request: Request) -> Dict[str, Any]:
+    user = await _get_session_from_request(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="No autenticado")
+    return user
+
+
+async def require_admin(request: Request) -> Dict[str, Any]:
+    user = await require_user(request)
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Solo el admin puede hacer esta acción")
+    return user
+
+
+# ============================================================
 # KEY-VALUE STORAGE (reemplaza window.storage)
 # Colecciones:
 #   storage_shared: entradas compartidas entre todo el equipo
@@ -41,7 +90,7 @@ class StorageDeleteBody(BaseModel):
 
 
 @api_router.post("/storage/set")
-async def storage_set(body: StorageSetBody):
+async def storage_set(body: StorageSetBody, user: Dict[str, Any] = Depends(require_user)):
     now = datetime.now(timezone.utc).isoformat()
     await db.storage_shared.update_one(
         {"key": body.key},
@@ -52,7 +101,7 @@ async def storage_set(body: StorageSetBody):
 
 
 @api_router.get("/storage/get")
-async def storage_get(key: str = Query(...), shared: bool = Query(True)):
+async def storage_get(key: str = Query(...), shared: bool = Query(True), user: Dict[str, Any] = Depends(require_user)):
     doc = await db.storage_shared.find_one({"key": key}, {"_id": 0})
     if not doc:
         return {"value": None}
@@ -60,7 +109,7 @@ async def storage_get(key: str = Query(...), shared: bool = Query(True)):
 
 
 @api_router.post("/storage/delete")
-async def storage_delete(body: StorageDeleteBody):
+async def storage_delete(body: StorageDeleteBody, user: Dict[str, Any] = Depends(require_user)):
     await db.storage_shared.delete_one({"key": body.key})
     return {"ok": True}
 
@@ -82,7 +131,7 @@ class AIChatBody(BaseModel):
 
 
 @api_router.post("/ai/test-chat")
-async def ai_test_chat(body: AIChatBody):
+async def ai_test_chat(body: AIChatBody, user: Dict[str, Any] = Depends(require_user)):
     """Envía el último mensaje del usuario al modelo con el system prompt.
     Multi-turn: reenvía todo el historial para cada llamada (stateless).
     """
@@ -172,6 +221,7 @@ async def list_events(
     project_id: Optional[str] = None,
     flow: Optional[str] = None,
     limit: int = 500,
+    user: Dict[str, Any] = Depends(require_user),
 ):
     q: Dict[str, Any] = {}
     if project_id:
@@ -194,7 +244,7 @@ class WhatsAppSendBody(BaseModel):
 
 
 @api_router.post("/whatsapp/send")
-async def whatsapp_send(body: WhatsAppSendBody):
+async def whatsapp_send(body: WhatsAppSendBody, user: Dict[str, Any] = Depends(require_user)):
     """Relay para evitar problemas CORS desde el navegador.
     Envía un mensaje de texto por WhatsApp Cloud API."""
     url = f"https://graph.facebook.com/v21.0/{body.phone_number_id}/messages"
@@ -228,7 +278,7 @@ class WhatsAppTemplateSendBody(BaseModel):
 
 
 @api_router.post("/whatsapp/send-template")
-async def whatsapp_send_template(body: WhatsAppTemplateSendBody):
+async def whatsapp_send_template(body: WhatsAppTemplateSendBody, user: Dict[str, Any] = Depends(require_user)):
     """Envía una plantilla Meta ya aprobada con parámetros rellenos al teléfono destino.
     Lee phone_number_id + access_token de las conexiones del proyecto."""
     connections = await _read_storage(f"wa_editor:p:{body.project_id}:connections") or {}
@@ -291,7 +341,7 @@ class TestConnectionBody(BaseModel):
 
 
 @api_router.post("/test-connection")
-async def test_connection(body: TestConnectionBody):
+async def test_connection(body: TestConnectionBody, user: Dict[str, Any] = Depends(require_user)):
     handlers = {
         "meta": _test_meta_connection,
         "evolution": _test_evolution_connection,
@@ -376,7 +426,7 @@ class EvolutionSendBody(BaseModel):
 
 
 @api_router.post("/evolution/send")
-async def evolution_send(body: EvolutionSendBody):
+async def evolution_send(body: EvolutionSendBody, user: Dict[str, Any] = Depends(require_user)):
     url = f"{body.server_url.rstrip('/')}/message/sendText/{body.instance}"
     payload: Dict[str, Any] = {"number": body.to, "text": body.message}
     if body.delay_ms and body.delay_ms > 0:
@@ -816,7 +866,7 @@ class LaunchDeployBody(BaseModel):
 
 
 @api_router.post("/launch/deploy")
-async def launch_deploy(body: LaunchDeployBody):
+async def launch_deploy(body: LaunchDeployBody, user: Dict[str, Any] = Depends(require_user)):
     """Envía el workflow JSON al webhook de despliegue de n8n del usuario.
     n8n debe tener un Webhook node configurado que acepte el workflow y:
     - (A) lo cree vía /rest/workflows (n8n API), o
@@ -863,7 +913,7 @@ async def launch_deploy(body: LaunchDeployBody):
 
 
 @api_router.get("/launch/{project_id}/status")
-async def launch_status(project_id: str):
+async def launch_status(project_id: str, user: Dict[str, Any] = Depends(require_user)):
     """Estado del lanzamiento activo + stats agregados de /api/events del proyecto."""
     launch = await _read_storage(f"wa_editor:p:{project_id}:active_launch")
     if not launch:
@@ -902,7 +952,7 @@ class LaunchCompleteBody(BaseModel):
 
 
 @api_router.post("/launch/complete")
-async def launch_complete(body: LaunchCompleteBody):
+async def launch_complete(body: LaunchCompleteBody, user: Dict[str, Any] = Depends(require_user)):
     """Marca el launch como completado (manual o auto). Archiva en histórico y BORRA active_launch."""
     launch = await _read_storage(f"wa_editor:p:{body.project_id}:active_launch")
     if not launch:
@@ -921,7 +971,7 @@ async def launch_complete(body: LaunchCompleteBody):
 
 
 @api_router.post("/launch/{project_id}/stop")
-async def launch_stop(project_id: str):
+async def launch_stop(project_id: str, user: Dict[str, Any] = Depends(require_user)):
     """Cancela el launch activo. Archiva en histórico y BORRA active_launch."""
     launch = await _read_storage(f"wa_editor:p:{project_id}:active_launch")
     if not launch:
@@ -979,7 +1029,7 @@ async def _get_intake(token: str) -> Dict[str, Any]:
 
 
 @api_router.post("/intake/create")
-async def intake_create(body: IntakeCreateBody):
+async def intake_create(body: IntakeCreateBody, user: Dict[str, Any] = Depends(require_user)):
     """Agencia crea o reemplaza el intake del proyecto. Devuelve token."""
     existing = await db.intake_tokens.find_one({"project_id": body.project_id}, {"_id": 0})
     token = existing["token"] if existing else _secrets.token_urlsafe(18)
@@ -997,7 +1047,7 @@ async def intake_create(body: IntakeCreateBody):
 
 
 @api_router.get("/intake/project/{project_id}")
-async def intake_get_for_project(project_id: str):
+async def intake_get_for_project(project_id: str, user: Dict[str, Any] = Depends(require_user)):
     """Agencia consulta el intake del proyecto (si existe)."""
     rec = await db.intake_tokens.find_one({"project_id": project_id}, {"_id": 0})
     if not rec:
@@ -1006,7 +1056,7 @@ async def intake_get_for_project(project_id: str):
 
 
 @api_router.put("/intake/project/{project_id}/items")
-async def intake_update_items(project_id: str, body: IntakeUpdateItemsBody):
+async def intake_update_items(project_id: str, body: IntakeUpdateItemsBody, user: Dict[str, Any] = Depends(require_user)):
     """Agencia actualiza qué pedir (toggle requested, añadir/quitar custom)."""
     rec = await db.intake_tokens.find_one({"project_id": project_id})
     if not rec:
@@ -1166,7 +1216,7 @@ async def intake_client_complete(token: str):
 
 
 @api_router.post("/intake/project/{project_id}/review")
-async def intake_agency_review(project_id: str, body: IntakeReviewBody):
+async def intake_agency_review(project_id: str, body: IntakeReviewBody, user: Dict[str, Any] = Depends(require_user)):
     """Agencia aprueba o rechaza un item pendiente. Si aprueba → aplica al proyecto."""
     rec = await db.intake_tokens.find_one({"project_id": project_id})
     if not rec:
@@ -1382,7 +1432,7 @@ class MetaTemplatesSyncFullBody(BaseModel):
 
 
 @api_router.post("/meta/templates/sync")
-async def meta_templates_sync(body: MetaTemplatesSyncFullBody):
+async def meta_templates_sync(body: MetaTemplatesSyncFullBody, user: Dict[str, Any] = Depends(require_user)):
     """Sincroniza plantillas Meta para un proyecto. Itera los items, categoriza con LLM,
     convierte variables, y crea cada plantilla en el WABA vía Graph API.
     """
@@ -1535,7 +1585,7 @@ async def meta_templates_sync(body: MetaTemplatesSyncFullBody):
 
 
 @api_router.get("/meta/templates/status/{project_id}")
-async def meta_templates_refresh_status(project_id: str):
+async def meta_templates_refresh_status(project_id: str, user: Dict[str, Any] = Depends(require_user)):
     """Pull del estado actual de cada plantilla WAFLOW en el WABA del proyecto."""
     connections = await _read_storage(f"wa_editor:p:{project_id}:connections") or {}
     waba_id = connections.get("wabaId")
@@ -1696,7 +1746,7 @@ async def _flow_test_run_task(run_id: str):
 
 
 @api_router.post("/whatsapp/run-flow-test")
-async def start_flow_test_run(body: FlowTestRunBody):
+async def start_flow_test_run(body: FlowTestRunBody, user: Dict[str, Any] = Depends(require_user)):
     """Arranca un run de prueba: envía secuencialmente las plantillas al teléfono con delay."""
     connections = await _read_storage(f"wa_editor:p:{body.project_id}:connections") or {}
     phone_id = connections.get("phoneNumberId")
@@ -1743,7 +1793,7 @@ async def get_flow_test_run(run_id: str):
 
 
 @api_router.post("/whatsapp/run-flow-test/{run_id}/cancel")
-async def cancel_flow_test_run(run_id: str):
+async def cancel_flow_test_run(run_id: str, user: Dict[str, Any] = Depends(require_user)):
     r = await db.flow_test_runs.update_one(
         {"run_id": run_id, "status": "running"},
         {"$set": {"status": "cancelled"}},
@@ -1763,54 +1813,12 @@ async def cancel_flow_test_run(run_id: str):
 #   4) Backend creates/updates user, stores session in db.user_sessions, sets httpOnly cookie
 #   5) Frontend calls /api/auth/me on load to check session
 # ============================================================
-SESSION_COOKIE_NAME = "waflow_session"
-SESSION_DURATION_DAYS = 7
+# Nota: SESSION_COOKIE_NAME, SESSION_DURATION_DAYS y los helpers require_user/require_admin
+# están definidos arriba del archivo para poder usarlos en los Depends() de endpoints.
 
 
 class AuthCallbackBody(BaseModel):
     session_id: str
-
-
-async def _get_session_from_request(request: Request) -> Optional[Dict[str, Any]]:
-    """Extrae session_token de cookie (primero) o Authorization header (fallback).
-    Valida existencia, expiración, y devuelve el user doc sin _id."""
-    token = request.cookies.get(SESSION_COOKIE_NAME)
-    if not token:
-        auth = request.headers.get("authorization") or ""
-        if auth.lower().startswith("bearer "):
-            token = auth.split(" ", 1)[1].strip()
-    if not token:
-        return None
-    session = await db.user_sessions.find_one({"session_token": token}, {"_id": 0})
-    if not session:
-        return None
-    expires_at = session.get("expires_at")
-    if isinstance(expires_at, str):
-        try:
-            expires_at = datetime.fromisoformat(expires_at)
-        except Exception:
-            return None
-    if expires_at and expires_at.tzinfo is None:
-        expires_at = expires_at.replace(tzinfo=timezone.utc)
-    if expires_at and expires_at < datetime.now(timezone.utc):
-        await db.user_sessions.delete_one({"session_token": token})
-        return None
-    user_doc = await db.users.find_one({"user_id": session["user_id"]}, {"_id": 0})
-    return user_doc
-
-
-async def require_user(request: Request) -> Dict[str, Any]:
-    user = await _get_session_from_request(request)
-    if not user:
-        raise HTTPException(status_code=401, detail="No autenticado")
-    return user
-
-
-async def require_admin(request: Request) -> Dict[str, Any]:
-    user = await require_user(request)
-    if user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Solo el admin puede hacer esta acción")
-    return user
 
 
 @api_router.post("/auth/callback")
@@ -1843,12 +1851,17 @@ async def auth_callback(body: AuthCallbackBody, response: FastAPIResponse):
     existing = await db.users.find_one({"email": email}, {"_id": 0})
 
     # Política de acceso:
+    # 0) INITIAL_ADMIN_EMAILS (env): bypass allowlist + force role=admin (idempotente).
     # 1) Si ya existe como usuario, OK.
     # 2) Si no existe, primer usuario (sin users en BD) → se convierte en admin automáticamente.
     # 3) Si no existe y hay users, su email debe estar en db.auth_allowlist, si no → 403.
+    initial_admins_raw = os.environ.get("INITIAL_ADMIN_EMAILS", "") or ""
+    initial_admins = {e.strip().lower() for e in initial_admins_raw.split(",") if e.strip()}
+    is_initial_admin = email in initial_admins
+
     if not existing:
         user_count = await db.users.count_documents({})
-        if user_count == 0:
+        if is_initial_admin or user_count == 0:
             role = "admin"
             invited_by = None
         else:
@@ -1875,10 +1888,19 @@ async def auth_callback(body: AuthCallbackBody, response: FastAPIResponse):
         existing = {**new_user}
         existing.pop("_id", None)
     else:
-        # actualizar avatar/name por si cambió en Google
+        # actualizar avatar/name por si cambió en Google; promociona a admin si está en INITIAL_ADMIN_EMAILS
+        update_set = {
+            "name": name,
+            "avatar_url": picture,
+            "google_id": google_id,
+            "last_login_at": datetime.now(timezone.utc),
+        }
+        if is_initial_admin and existing.get("role") != "admin":
+            update_set["role"] = "admin"
+            existing["role"] = "admin"
         await db.users.update_one(
             {"user_id": existing["user_id"]},
-            {"$set": {"name": name, "avatar_url": picture, "google_id": google_id, "last_login_at": datetime.now(timezone.utc)}},
+            {"$set": update_set},
         )
         existing["name"] = name
         existing["avatar_url"] = picture

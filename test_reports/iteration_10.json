@@ -1,0 +1,34 @@
+{
+  "summary": "Iter-10 backend validation of (1) INITIAL_ADMIN_EMAILS env-var bypass+admin promotion, (2) Depends(require_user) protection on 21+ sensitive endpoints, (3) public endpoints kept open (review/intake magic-link + n8n /api/events POST + /auth/callback), (4) strip_emojis trim/no-Pydantic-warning, (5) MetaTemplateSyncItemBody alias copy->copy_text. Created /app/backend/tests/test_iter10_auth_protection.py with 43 pytest tests — ALL 43 PASS in 5.13s. Coverage: 21 protected endpoints (5 GET + 15 POST + 1 PUT) all return 401 without cookie; 13 public endpoints (review get/create/approve/sign/notify/summary.pdf, intake token get/save/complete + /intake/file/{id}, /auth/callback, /events POST, /whatsapp/run-flow-test/{run_id} GET) NEVER return 401; strip_emojis emits exactly '¡Hola! Bienvenid@' for input '¡Hola! 👋 Bienvenid@ 🎉' (no trailing space, double-space collapsed); MetaTemplateSyncItemBody accepts both 'copy' (alias) and 'copy_text' (field) thanks to populate_by_name=True; INITIAL_ADMIN_EMAILS env var defined in backend/.env (empty) and code branches verified by static analysis (is_initial_admin gate present in both new-user and existing-user paths of auth_callback). Backend startup logs show no 'copy' shadow Pydantic warning anymore.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "EventBody (/api/events POST)", "issue": "Required field 'event' is opaque — no Pydantic Field description nor example. Not a bug, just maintainability."},
+      {"endpoint": "/api/auth/callback INITIAL_ADMIN_EMAILS", "issue": "End-to-end runtime validation requires mocking Emergent session-data endpoint (https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data) which is impractical here. Code branch covered via static-analysis assertions (4 invariants checked in test_initial_admin_emails_logic_present_in_source). Recommend manual smoke once env var is set in production."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_iter10_auth_protection.py",
+    "/app/test_reports/pytest/pytest_iter10.xml"
+  ],
+  "action_items": [
+    "(Info) Older regression tests (test_iter7.py, test_intake.py, test_review.py for non-public flows) now fail with 401 because they were written pre-auth. They are NOT broken behaviour — they require migration to use an authenticated session fixture. Either mark them as @pytest.mark.skip(reason='requires auth session') or build a conftest fixture that injects a fake session into db.user_sessions and sets the waflow_session cookie. This is housekeeping, not a bug.",
+    "(Info) When the user wants real e2e coverage of INITIAL_ADMIN_EMAILS, add a contracts test that monkeypatches httpx.AsyncClient.get to return a fake Emergent payload, then assert role=='admin' on db.users insert — currently covered only by source-code invariants."
+  ],
+  "critical_code_review_comments": [
+    "server.py:1858-1860 — env var read happens on every auth_callback request (not cached). For a low-traffic path (login) this is fine, but if ever moved to a hot path consider caching the parsed set at startup.",
+    "server.py:1898-1900 — promotion to admin sets existing['role']='admin' BEFORE awaiting db.users.update_one(); if the update fails the in-memory user is inconsistent with DB. Consider awaiting first then mutating local dict (low-risk: same request only).",
+    "server.py:1417-1423 — MetaTemplateSyncItemBody uses populate_by_name=True + Field(alias='copy'); confirmed Pydantic v2 behavior is correct. Good — no warning at import.",
+    "server.py:209-216 — POST /api/events is intentionally public for n8n webhook ingestion; no rate-limiting nor signature verification. If n8n is reachable from public internet, consider adding an HMAC header check (X-Webhook-Secret env var) to prevent abuse.",
+    "server.py:62-66 — require_user raises HTTPException 401 'No autenticado'; consistent and uniform across all 21 protected endpoints (verified via source grep + 21 e2e curl tests)."
+  ],
+  "updated_files": ["/app/backend/tests/test_iter10_auth_protection.py"],
+  "success_rate": {"backend": "100% (43/43 iter10) — pre-existing iter7/intake/review tests now require session fixture migration (out of scope for this iteration)", "frontend": "not tested (backend-only request)"},
+  "test_credentials": "Not required: tests verify 401 by simply omitting the waflow_session cookie. INITIAL_ADMIN_EMAILS is empty in /app/backend/.env (placeholder).",
+  "seed_data_creation": "None. No DB writes except one /api/events row (TEST_iter10_public_smoke) which is intentional and harmless.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend Iter-10 auth-protection coverage is in /app/backend/tests/test_iter10_auth_protection.py (43 tests, ~5s). Run with: pytest /app/backend/tests/test_iter10_auth_protection.py -v. Older regression suites (test_iter7.py, test_intake.py, test_review.py) ARE EXPECTED to fail their non-public assertions until a session-cookie fixture is added (e.g. inject {'session_token':'tok','user_id':'u1','expires_at': future} into db.user_sessions and set cookie 'waflow_session=tok' on the requests.Session). Public review/intake flows in those files still pass. INITIAL_ADMIN_EMAILS branches are validated via source-code invariants only — to validate dynamically, monkeypatch httpx.AsyncClient at the auth_callback level. strip_emojis exact contract: input '¡Hola! 👋 Bienvenid@ 🎉' -> '¡Hola! Bienvenid@'.",
+  "rca_of_the_issue": "N/A — no bugs found. All three iter-10 features land correctly: 21 sensitive endpoints uniformly guarded by Depends(require_user), 13 public endpoints remain unguarded (including /api/events POST for n8n and /api/auth/callback bootstrap), strip_emojis returns trimmed output, and MetaTemplateSyncItemBody alias works both ways. INITIAL_ADMIN_EMAILS branch present in source (4 invariants checked) — runtime validation pending external mock setup."
+}
