@@ -364,6 +364,18 @@ Editor colaborativo multi-proyecto de secuencias de mensajes de WhatsApp para ag
   - → emite warning: `Menciona "{valor}" literal · usa {VARIABLE} para que el template sea reutilizable`.
 - Es defensivo: requiere valor ≥3 chars, salta valores `Tu...`, y compara case-sensitive para evitar falsos positivos en palabras genéricas.
 
+### Iter 22 (feb 2026) — Auto-reemplazar literales hardcoded
+**Motivo**: complemento del linter de iter-21. Con un click se reemplaza la mención literal por su variable, sin editar a mano.
+
+**Cambios (`App.jsx` → `CheckerPanel`)**:
+- Cada issue del tipo `replace_literal` lleva metadata `autoFix: { literal, variable, currentCopy }`.
+- `CheckerPanel` recibe nueva prop `onEditCopy` (reutiliza el `handleEditCopy` existente del `ProjectWorkspace`).
+- Junto a cada warning hardcoded aparece botón 🪄 **Auto-reemplazar** que:
+  - Escapa regex special chars del literal.
+  - Hace `copy.replace(new RegExp(escaped, "g"), "{VARIABLE}")`.
+  - Persiste vía `onEditCopy(msgKey, newCopy)` → historial + autosave.
+- `data-testid="autofix-{msgKey}-{variable}"` para testing.
+
 ## Next Action Items
 - **P1** Extraer `IntakePanel` de App.jsx a `src/panels/IntakePanel.jsx` (~300 líneas dentro de App.jsx = 5150 tras iter-9) siguiendo el patrón de PublicReviewPage.
 - **P1** Continuar refactor App.jsx: `ConnectionsPanel`, `AutopilotPanel+LaunchWizard`, `MessageCard` (411 líneas, complejidad 107), `ProjectWorkspace` (480 líneas). Objetivo: App.jsx <3500 líneas.

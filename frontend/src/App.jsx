@@ -3571,7 +3571,7 @@ function StatCard({ label, value, sub, icon, alert }) {
 // ====================================================================
 // CHECKER — Validación previa
 // ====================================================================
-function CheckerPanel({ flows, vars, edits, creatives, templatesByMsg, variantsByMsg, onGoToMessage }) {
+function CheckerPanel({ flows, vars, edits, creatives, templatesByMsg, variantsByMsg, onGoToMessage, onEditCopy }) {
   const checks = useMemo(() => {
     const issues = [];
     const EVOLUTION_KEYS = new Set(["broadcasts", "venta_comunidad"]);
@@ -3636,6 +3636,7 @@ function CheckerPanel({ flows, vars, edits, creatives, templatesByMsg, variantsB
               type: "warning", flowKey: f.key, msgKey,
               label: `${f.label} · ${m.id || i}`,
               text: `Menciona "${val}" literal · usa ${`{${vname}}`} para que el template sea reutilizable (${vlabel})`,
+              autoFix: { kind: "replace_literal", literal: val, variable: vname, currentCopy: copy },
             });
           }
         });
@@ -3699,9 +3700,26 @@ function CheckerPanel({ flows, vars, edits, creatives, templatesByMsg, variantsB
                   <div className="text-[13px]">{c.text}</div>
                 </div>
                 {c.flowKey && c.msgKey && (
-                  <button onClick={() => onGoToMessage(c.flowKey, c.msgKey)} className="text-[11px] font-medium text-stone-700 hover:text-stone-900 border border-stone-300 bg-white rounded px-2 py-1 shrink-0">
-                    Ir →
-                  </button>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {c.autoFix?.kind === "replace_literal" && onEditCopy && (
+                      <button
+                        data-testid={`autofix-${c.msgKey}-${c.autoFix.variable}`}
+                        onClick={() => {
+                          const { literal, variable, currentCopy } = c.autoFix;
+                          // Escape regex special chars on the literal, reemplazo global
+                          const escaped = literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+                          const next = currentCopy.replace(new RegExp(escaped, "g"), `{${variable}}`);
+                          if (next !== currentCopy) onEditCopy(c.msgKey, next);
+                        }}
+                        title={`Reemplazar "${c.autoFix.literal}" por {${c.autoFix.variable}}`}
+                        className="text-[11px] font-medium text-emerald-800 bg-emerald-50 border border-emerald-300 hover:bg-emerald-100 rounded px-2 py-1">
+                        🪄 Auto-reemplazar
+                      </button>
+                    )}
+                    <button onClick={() => onGoToMessage(c.flowKey, c.msgKey)} className="text-[11px] font-medium text-stone-700 hover:text-stone-900 border border-stone-300 bg-white rounded px-2 py-1">
+                      Ir →
+                    </button>
+                  </div>
                 )}
               </div>
             );
@@ -4982,7 +5000,7 @@ function ProjectWorkspace({ project, onBack, me, onUpdateProject }) {
         {activeTab === "mindmap" && <main className="flex-1 min-w-0 px-8 py-8"><MindMap strategyKey={project.strategy} flows={FLOWS} onFlowClick={fk => { setActiveFlow(fk); setActiveTab("flows"); }} onAddMessage={openNewMsg} /></main>}
         {activeTab === "calendar" && <main className="flex-1 min-w-0 px-8 py-8"><CalendarPanel flows={FLOWS} vars={vars} /></main>}
         {activeTab === "simulator" && <main className="flex-1 min-w-0 px-8 py-8"><SimulatorPanel flows={FLOWS} vars={vars} edits={edits} /></main>}
-        {activeTab === "checker" && <main className="flex-1 min-w-0 px-8 py-8"><CheckerPanel flows={FLOWS} vars={vars} edits={edits} creatives={creatives} templatesByMsg={templatesByMsg} variantsByMsg={variantsByMsg} onGoToMessage={goToMessage} /></main>}
+        {activeTab === "checker" && <main className="flex-1 min-w-0 px-8 py-8"><CheckerPanel flows={FLOWS} vars={vars} edits={edits} creatives={creatives} templatesByMsg={templatesByMsg} variantsByMsg={variantsByMsg} onGoToMessage={goToMessage} onEditCopy={handleEditCopy} /></main>}
         {activeTab === "creatives" && <main className="flex-1 min-w-0 px-8 py-8"><CreativesPanel creatives={creatives} setCreatives={setCreatives} allMessages={allMessages} /></main>}
         {activeTab === "monitoring" && <main className="flex-1 min-w-0 px-8 py-8"><MonitoringPanel flows={FLOWS} projectId={project.id} /></main>}
         {activeTab === "client" && <main className="flex-1 min-w-0 px-8 py-8"><ClientReviewPanel flows={FLOWS} vars={vars} edits={edits} approvalByMsg={approvalByMsg} onSetApproval={setApproval} me={me} projectName={project.name} projectId={project.id} /></main>}
