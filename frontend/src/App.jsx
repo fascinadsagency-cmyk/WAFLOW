@@ -40,7 +40,15 @@ const CALENDAR_VARS = [
   { category: "📆 CALENDARIOS", name: "FECHA_WEBINAR_ISO_END", value: "2026-04-15T22:30:00", editable: true },
 ];
 
-const WEBINAR_DEFAULT_VARS = [...cleanVariablesBase, ...CALENDAR_VARS];
+// Variables operativas del chatbot (soporte + cierres) usadas por los prompts del bot WhatsApp.
+// Ver /app/memory/PRD.md iter-19 para el contexto completo.
+const CHATBOT_OPS_VARS = [
+  { category: "📞 SOPORTE", name: "NUMERO_SOPORTE", value: "+34612345678", editable: true },
+  { category: "⏰ URGENCIA", name: "FECHA_CIERRE_BONOS", value: "17/04/2026", editable: true },
+  { category: "⏰ URGENCIA", name: "FECHA_CIERRE_DEFINITIVO", value: "22/04/2026", editable: true },
+];
+
+const WEBINAR_DEFAULT_VARS = [...cleanVariablesBase, ...CALENDAR_VARS, ...CHATBOT_OPS_VARS];
 
 // === FLUJOS DE LA ESTRATEGIA WEBINAR (tu Excel) ===
 const FLOWS_WEBINAR_DEF = [

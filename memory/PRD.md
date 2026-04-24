@@ -329,6 +329,17 @@ Editor colaborativo multi-proyecto de secuencias de mensajes de WhatsApp para ag
   - **App.jsx: 5973 → 5082 líneas (-891)**. Lint limpio, compila sin errores.
 - **Testing iter-17** (`/app/backend/tests/test_iter10_auth_protection.py`, 43 tests): 21 endpoints protegidos devuelven 401 sin cookie; 13 públicos siguen abiertos; `strip_emojis` sin trailing spaces; alias `copy`/`copy_text` ambos aceptados; sin warning Pydantic. **43/43 PASS en 5.13s.**
 
+### Iter 19 (feb 2026) — Variables operativas del chatbot (soporte + urgencia)
+**Motivo**: el usuario compartió los 8 prompts del ChatBot WhatsApp por fases del lanzamiento (CAPTACIÓN → POST-COMPRA). El Excel actual no incluía 3 variables clave que los prompts consumen:
+- `NUMERO_SOPORTE` — número al que el bot deriva leads complejos (fases Replay, Venta y Post-compra).
+- `FECHA_CIERRE_BONOS` — urgencia en fases 3/4 (bonos cierran antes que la venta).
+- `FECHA_CIERRE_DEFINITIVO` — cierre total en fase 7 (últimas 48h).
+
+**Cambios**:
+- Añadido nuevo array `CHATBOT_OPS_VARS` en `App.jsx` con esas 3 variables (categorías `📞 SOPORTE` y `⏰ URGENCIA`, editable: true). `WEBINAR_DEFAULT_VARS` ahora incluye este array.
+- Retrocompatibilidad automática: la función de carga existente (`base.map()` merge) detecta las nuevas variables y las añade a proyectos ya creados conservando los valores guardados del resto. No hace falta migración manual.
+- Evergreen no se modifica: no aplica urgencia ni cierres en modelo evergreen; `NUMERO_SOPORTE` ya estaba.
+
 ## Next Action Items
 - **P1** Extraer `IntakePanel` de App.jsx a `src/panels/IntakePanel.jsx` (~300 líneas dentro de App.jsx = 5150 tras iter-9) siguiendo el patrón de PublicReviewPage.
 - **P1** Continuar refactor App.jsx: `ConnectionsPanel`, `AutopilotPanel+LaunchWizard`, `MessageCard` (411 líneas, complejidad 107), `ProjectWorkspace` (480 líneas). Objetivo: App.jsx <3500 líneas.
