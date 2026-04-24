@@ -48,6 +48,13 @@ const CHATBOT_OPS_VARS = [
   { category: "⏰ URGENCIA", name: "FECHA_CIERRE_DEFINITIVO", value: "22/04/2026", editable: true },
 ];
 
+// Set de variables críticas que NO pueden quedarse con el valor placeholder por defecto
+// al hacer deploy. Se usan en los prompts del bot (derivación soporte, urgencia de cierre).
+const CRITICAL_DEFAULT_VALUES = CHATBOT_OPS_VARS.reduce((acc, v) => {
+  acc[v.name] = v.value;
+  return acc;
+}, {});
+
 const WEBINAR_DEFAULT_VARS = [...cleanVariablesBase, ...CALENDAR_VARS, ...CHATBOT_OPS_VARS];
 
 // === FLUJOS DE LA ESTRATEGIA WEBINAR (tu Excel) ===
@@ -1682,12 +1689,13 @@ function ConnectionsPanel({ conn, setConn, projectName, notifyConfig, setNotifyC
 // LAUNCH WIZARD — Modo Lanzamiento Activo
 // Pasos: snapshot → deploy n8n → iniciar polling → auto-freeze al 95%
 // ====================================================================
-function LaunchWizard({ project, connections, workflowJson, snapshotId, onDeployed, onClose }) {
+function LaunchWizard({ project, connections, workflowJson, snapshotId, criticalStillDefault = [], onDeployed, onClose }) {
   const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
   const [step, setStep] = useState(0); // 0:review, 1:deploying, 2:running
   const [deployResult, setDeployResult] = useState(null);
   const [error, setError] = useState(null);
   const deployUrl = connections?.n8nDeployWebhookUrl || "";
+  const hasCriticalBlockers = criticalStillDefault.length > 0;
 
   const steps = [
     { label: "Snapshot Pre-launch", icon: "📸", done: !!snapshotId },
@@ -1698,6 +1706,10 @@ function LaunchWizard({ project, connections, workflowJson, snapshotId, onDeploy
   ];
 
   const deploy = async () => {
+    if (hasCriticalBlockers) {
+      setError(`No puedes lanzar: las siguientes variables críticas siguen con el valor placeholder por defecto → ${criticalStillDefault.join(", ")}. Personalízalas en Variables antes de deployar.`);
+      return;
+    }
     if (!deployUrl) { setError("Falta 'Webhook deploy' en Conexiones → n8n."); return; }
     setError(null);
     setStep(1);
@@ -1772,6 +1784,18 @@ function LaunchWizard({ project, connections, workflowJson, snapshotId, onDeploy
               </div>
             )}
           </div>
+          {hasCriticalBlockers && (
+            <div className="text-[12px] text-red-800 bg-red-50 border border-red-200 rounded p-3"
+              data-testid="launch-critical-blockers">
+              <div className="font-semibold mb-1">🛑 Variables críticas del bot aún con valor placeholder</div>
+              <ul className="ml-4 list-disc space-y-0.5 font-mono text-[11px]">
+                {criticalStillDefault.map(n => <li key={n}>{"{" + n + "}"}</li>)}
+              </ul>
+              <div className="mt-2 text-[11px] text-red-700">
+                Personaliza estas variables en <em>Variables</em> antes de deployar. Si el bot deriva al número de soporte placeholder, los leads llegarán al sitio equivocado.
+              </div>
+            </div>
+          )}
           {error && <div className="bg-red-50 border border-red-200 rounded p-2.5 text-[12px] text-red-800">{error}</div>}
           {deployResult && deployResult.ok && (
             <div className="bg-emerald-50 border border-emerald-200 rounded p-2.5 text-[12px] text-emerald-800">
@@ -1787,9 +1811,10 @@ function LaunchWizard({ project, connections, workflowJson, snapshotId, onDeploy
               ✅ Volver al Autopilot
             </button>
           ) : (
-            <button onClick={deploy} disabled={step === 1 || !deployUrl}
+            <button onClick={deploy} disabled={step === 1 || !deployUrl || hasCriticalBlockers}
               data-testid="launch-deploy-btn"
-              className="px-5 py-2 text-sm font-semibold bg-red-600 text-white rounded-md hover:bg-red-700 disabled:opacity-50 inline-flex items-center gap-1.5">
+              title={hasCriticalBlockers ? "Personaliza las variables críticas antes de lanzar" : undefined}
+              className="px-5 py-2 text-sm font-semibold bg-red-600 text-white rounded-md hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1.5">
               <Zap size={14} /> {step === 1 ? "Desplegando..." : "Lanzar ahora"}
             </button>
           )}
@@ -1839,6 +1864,15 @@ function AutopilotPanel({
   const varsFilled = editableVars.filter(v => (v.value || "").trim() !== "");
   const varsPct = editableVars.length > 0 ? Math.round((varsFilled.length / editableVars.length) * 100) : 100;
 
+  // Variables críticas que siguen con el valor placeholder por defecto (prompts del bot)
+  const criticalStillDefault = Object.entries(CRITICAL_DEFAULT_VALUES)
+    .filter(([name, def]) => {
+      const v = vars.find(x => x.name === name);
+      return v && (v.value || "").trim() === (def || "").trim();
+    })
+    .map(([name]) => name);
+  const hasCriticalBlockers = criticalStillDefault.length > 0;
+
   const totalMsgs = flows.reduce((s, f) => s + f.items.length, 0);
   const approvedMsgs = Object.values(approvalByMsg || {}).filter(a => a?.status === "approved").length;
   const approvalPct = totalMsgs > 0 ? Math.round((approvedMsgs / totalMsgs) * 100) : 0;
@@ -1871,6 +1905,12 @@ function AutopilotPanel({
 
   const checklist = [
     { key: "vars", label: "Variables rellenas", status: varsPct === 100 ? "ok" : varsPct >= 70 ? "warn" : "fail", detail: `${varsFilled.length}/${editableVars.length} (${varsPct}%)`, goTab: "flows" },
+    { key: "critical_defaults", label: "Variables críticas del bot personalizadas",
+      status: hasCriticalBlockers ? "fail" : "ok",
+      detail: hasCriticalBlockers
+        ? `Aún con valor placeholder: ${criticalStillDefault.join(", ")}`
+        : "NUMERO_SOPORTE + fechas de cierre personalizadas",
+      goTab: "flows" },
     { key: "approval", label: "Aprobación del cliente", status: reviewSignature?.locked || approvalPct >= 100 ? "ok" : approvalPct >= 80 ? "warn" : "fail", detail: reviewSignature?.locked ? `🔐 Firmado por ${reviewSignature.signature?.signer_name}` : `${approvedMsgs}/${totalMsgs} aprobados (${approvalPct}%)`, goTab: "client" },
     { key: "templates", label: "Plantillas Meta marcadas", status: autoOrManualTemplatedMsgs >= nonEvoFlowMsgs ? "ok" : templatedMsgs > 0 ? "warn" : "fail", detail: templatedMsgs > 0 ? `${templatedMsgs} custom + ${autoOrManualTemplatedMsgs - templatedMsgs} auto (Meta)` : `${autoOrManualTemplatedMsgs} mensajes Meta (auto-template)`, goTab: "flows" },
     { key: "meta", label: "Meta Cloud API configurada", status: hasMeta ? "ok" : "fail", detail: hasMeta ? "Phone ID + Access Token presentes" : "Falta Phone ID o Access Token", goTab: "connections" },
@@ -2350,6 +2390,7 @@ function AutopilotPanel({
           connections={connections}
           workflowJson={launchWizard.workflowJson}
           snapshotId={launchWizard.snapshotId}
+          criticalStillDefault={criticalStillDefault}
           onDeployed={() => { /* polling empezará al próximo ciclo */ }}
           onClose={() => setLaunchWizard(null)}
         />

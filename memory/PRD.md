@@ -340,6 +340,19 @@ Editor colaborativo multi-proyecto de secuencias de mensajes de WhatsApp para ag
 - Retrocompatibilidad automática: la función de carga existente (`base.map()` merge) detecta las nuevas variables y las añade a proyectos ya creados conservando los valores guardados del resto. No hace falta migración manual.
 - Evergreen no se modifica: no aplica urgencia ni cierres en modelo evergreen; `NUMERO_SOPORTE` ya estaba.
 
+### Iter 20 (feb 2026) — Validador de variables críticas + bloqueo de Deploy
+**Motivo**: Las 3 variables añadidas en iter-19 (`NUMERO_SOPORTE`, `FECHA_CIERRE_BONOS`, `FECHA_CIERRE_DEFINITIVO`) traen valor placeholder por defecto. Si se olvidan de personalizar, los leads del bot se derivan al número equivocado → error caro.
+
+**Cambios (`App.jsx`)**:
+- Declarado `CRITICAL_DEFAULT_VALUES` derivado de `CHATBOT_OPS_VARS` (source-of-truth única).
+- En `AutopilotPanel`: cálculo reactivo `criticalStillDefault` (lista de vars que siguen con placeholder) y `hasCriticalBlockers` (boolean).
+- Nueva entrada en el checklist: `critical_defaults` con status `fail` si hay blockers, que lista las vars afectadas.
+- `LaunchWizard` recibe `criticalStillDefault` como prop y:
+  - Bloquea el botón "Lanzar ahora" (`disabled` + `cursor-not-allowed` + tooltip).
+  - Muestra banner rojo "🛑 Variables críticas del bot aún con valor placeholder" con la lista y explicación.
+  - Si el usuario intenta click programático a `deploy()`, lanza error inline en lugar de hacer el POST.
+- Testable via `data-testid`: `launch-critical-blockers`, `launch-deploy-btn`.
+
 ## Next Action Items
 - **P1** Extraer `IntakePanel` de App.jsx a `src/panels/IntakePanel.jsx` (~300 líneas dentro de App.jsx = 5150 tras iter-9) siguiendo el patrón de PublicReviewPage.
 - **P1** Continuar refactor App.jsx: `ConnectionsPanel`, `AutopilotPanel+LaunchWizard`, `MessageCard` (411 líneas, complejidad 107), `ProjectWorkspace` (480 líneas). Objetivo: App.jsx <3500 líneas.
