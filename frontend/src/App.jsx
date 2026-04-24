@@ -3611,6 +3611,34 @@ function CheckerPanel({ flows, vars, edits, creatives, templatesByMsg, variantsB
         if (isMetaFlow && hasEmojis(copy)) {
           issues.push({ type: "warning", flowKey: f.key, msgKey, label: `${f.label} · ${m.id || i}`, text: "Contiene emojis · Meta puede rechazar la plantilla. Usa el botón 'Limpiar emojis' en el mensaje." });
         }
+
+        // 8. Linter de copies hardcoded — detectar nombres/marcas literales
+        //    que deberían sustituirse por su variable. Evita que reutilizar un
+        //    template con otro cliente deje el nombre del anterior.
+        const hardcodedCandidates = [
+          { var: "NOMBRE_EXPERTO", label: "nombre del experto" },
+          { var: "NOMBRE_MARCA", label: "nombre de la marca" },
+          { var: "NOMBRE_PRODUCTO", label: "nombre del producto" },
+          { var: "NUMERO_SOPORTE", label: "número de soporte" },
+        ];
+        hardcodedCandidates.forEach(({ var: vname, label: vlabel }) => {
+          const vdef = vars.find(v => v.name === vname);
+          if (!vdef) return;
+          const val = (vdef.value || "").trim();
+          if (val.length < 3) return;
+          // Skip si el valor es el placeholder genérico (ej. "Tu Marca")
+          if (/^tu\b/i.test(val) || val === "+34612345678" || val === "+34XXXXXXXXX") return;
+          // Skip si el copy ya usa la variable explícitamente
+          if (copy && copy.includes(`{${vname}}`)) return;
+          // Detectar mención literal (case-sensitive para nombres propios)
+          if (copy && copy.includes(val)) {
+            issues.push({
+              type: "warning", flowKey: f.key, msgKey,
+              label: `${f.label} · ${m.id || i}`,
+              text: `Menciona "${val}" literal · usa ${`{${vname}}`} para que el template sea reutilizable (${vlabel})`,
+            });
+          }
+        });
       });
     });
 

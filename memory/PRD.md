@@ -353,6 +353,17 @@ Editor colaborativo multi-proyecto de secuencias de mensajes de WhatsApp para ag
   - Si el usuario intenta click programático a `deploy()`, lanza error inline en lugar de hacer el POST.
 - Testable via `data-testid`: `launch-critical-blockers`, `launch-deploy-btn`.
 
+### Iter 21 (feb 2026) — Linter de copies hardcoded
+**Motivo**: al reutilizar un template con otro cliente, los copies pueden contener nombres/marcas literales del cliente anterior (ej: "Soy Érika de Fascinads") en vez de `{NOMBRE_EXPERTO} de {NOMBRE_MARCA}`. El Checker ahora lo detecta.
+
+**Cambios (`App.jsx` → `CheckerPanel` regla 8)**:
+- Nueva regla que recorre cada copy y, para cada variable en `hardcodedCandidates` (`NOMBRE_EXPERTO`, `NOMBRE_MARCA`, `NOMBRE_PRODUCTO`, `NUMERO_SOPORTE`):
+  - Si el valor actual de esa variable aparece literal en el copy,
+  - y el copy NO usa ya `{VARIABLE}` explícitamente,
+  - y el valor no es un placeholder genérico ("Tu Marca", "+34612345678", "+34XXXXXXXXX"),
+  - → emite warning: `Menciona "{valor}" literal · usa {VARIABLE} para que el template sea reutilizable`.
+- Es defensivo: requiere valor ≥3 chars, salta valores `Tu...`, y compara case-sensitive para evitar falsos positivos en palabras genéricas.
+
 ## Next Action Items
 - **P1** Extraer `IntakePanel` de App.jsx a `src/panels/IntakePanel.jsx` (~300 líneas dentro de App.jsx = 5150 tras iter-9) siguiendo el patrón de PublicReviewPage.
 - **P1** Continuar refactor App.jsx: `ConnectionsPanel`, `AutopilotPanel+LaunchWizard`, `MessageCard` (411 líneas, complejidad 107), `ProjectWorkspace` (480 líneas). Objetivo: App.jsx <3500 líneas.
