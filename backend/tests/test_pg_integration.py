@@ -114,3 +114,46 @@ def test_map_launch_config_skips_nulls():
     out = pg_client.map_launch_config_to_vars(cfg)
     assert "TITULO_WEBINAR" not in out
     assert out["NOMBRE_PRODUCTO"] == "Solo este"
+
+
+# ============================================================
+# Cache TTL
+# ============================================================
+def test_cache_set_get_within_ttl(monkeypatch):
+    monkeypatch.setenv("PG_CACHE_TTL_SECS", "60")
+    import pg_client
+    importlib.reload(pg_client)
+    pg_client._cache_set("k1", {"a": 1})
+    assert pg_client._cache_get("k1") == {"a": 1}
+
+
+def test_cache_expires(monkeypatch):
+    monkeypatch.setenv("PG_CACHE_TTL_SECS", "60")
+    import pg_client
+    importlib.reload(pg_client)
+    pg_client._cache_set("k2", "value")
+    # Forzar expiración manipulando el timestamp
+    expires_at, value = pg_client._CACHE["k2"]
+    pg_client._CACHE["k2"] = (expires_at - 100, value)
+    assert pg_client._cache_get("k2") is None
+    assert "k2" not in pg_client._CACHE  # auto-evicted
+
+
+def test_cache_ttl_zero_disables(monkeypatch):
+    monkeypatch.setenv("PG_CACHE_TTL_SECS", "0")
+    import pg_client
+    importlib.reload(pg_client)
+    pg_client._cache_set("k3", "v")
+    assert pg_client._cache_get("k3") is None
+
+
+def test_cache_clear():
+    import pg_client
+    pg_client._cache_set("k4", "v")
+    pg_client.cache_clear()
+    assert pg_client._cache_get("k4") is None
+
+
+def test_cache_endpoint_requires_auth(client):
+    r = client.post("/api/pg/cache/clear")
+    assert r.status_code == 401

@@ -19,6 +19,43 @@ _pool: Optional[asyncpg.Pool] = None
 _pool_dsn: Optional[str] = None
 log = logging.getLogger("waflow.pg")
 
+# ============================================================================
+# TTL Cache simple (in-memory). Evita aplastar PG cuando varios usuarios
+# miran el LIVE Monitor. TTL configurable por env var PG_CACHE_TTL_SECS.
+# ============================================================================
+import time as _time
+
+_CACHE: Dict[str, tuple] = {}  # key -> (expires_at, value)
+
+
+def _cache_ttl() -> int:
+    try:
+        return max(0, int(os.environ.get("PG_CACHE_TTL_SECS", "60")))
+    except ValueError:
+        return 60
+
+
+def _cache_get(key: str):
+    entry = _CACHE.get(key)
+    if not entry:
+        return None
+    expires_at, value = entry
+    if _time.time() > expires_at:
+        _CACHE.pop(key, None)
+        return None
+    return value
+
+
+def _cache_set(key: str, value) -> None:
+    ttl = _cache_ttl()
+    if ttl <= 0:
+        return
+    _CACHE[key] = (_time.time() + ttl, value)
+
+
+def cache_clear() -> None:
+    _CACHE.clear()
+
 
 def _get_dsn() -> Optional[str]:
     dsn = os.environ.get("PG_DSN")
@@ -41,6 +78,7 @@ async def get_pool() -> Optional[asyncpg.Pool]:
         except Exception:
             pass
         _pool = None
+        cache_clear()
     if _pool is None:
         try:
             _pool = await asyncpg.create_pool(
@@ -91,7 +129,10 @@ async def health_check() -> Dict[str, Any]:
 # ============================================================================
 
 async def get_active_launch_config() -> Optional[Dict[str, Any]]:
-    """Devuelve el launch_config con is_active=true (puede no haber ninguno)."""
+    """Devuelve el launch_config con is_active=true (puede no haber ninguno). Cacheado 60s."""
+    cached = _cache_get("active_launch")
+    if cached is not None:
+        return cached or None  # cached can be {} sentinel for None
     pool = await get_pool()
     if pool is None:
         return None
@@ -101,13 +142,17 @@ async def get_active_launch_config() -> Optional[Dict[str, Any]]:
             "       link_zoom, nombre_producto, precio_producto, is_active, group_jid "
             "FROM wa_launch_config WHERE is_active = TRUE LIMIT 1"
         )
-        if not row:
-            return None
-        return dict(row)
+    result = dict(row) if row else {}
+    _cache_set("active_launch", result)
+    return result or None
 
 
 async def list_launch_configs(limit: int = 20) -> List[Dict[str, Any]]:
-    """Lista todos los launches (activos + históricos) ordenados por fecha desc."""
+    """Lista todos los launches (activos + históricos) ordenados por fecha desc. Cacheado 60s."""
+    cache_key = f"launch_configs:{limit}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
     pool = await get_pool()
     if pool is None:
         return []
@@ -119,7 +164,9 @@ async def list_launch_configs(limit: int = 20) -> List[Dict[str, Any]]:
             "ORDER BY fecha_webinar DESC NULLS LAST LIMIT $1",
             limit,
         )
-        return [dict(r) for r in rows]
+    result = [dict(r) for r in rows]
+    _cache_set(cache_key, result)
+    return result
 
 
 async def list_scheduled_messages(launch_id: Optional[str] = None, limit: int = 500) -> List[Dict[str, Any]]:
@@ -191,7 +238,13 @@ def _calc_tasa_compra(compradores: int, total: int) -> float:
 
 
 async def get_users_stats(launch_id: Optional[str] = None) -> Dict[str, Any]:
-    """Estadísticas agregadas de wa_users (total, compradores, steps, tags, reactivaciones)."""
+    """Estadísticas agregadas de wa_users (total, compradores, steps, tags, reactivaciones).
+    Cacheado 60s por launch_id."""
+    cache_key = f"users_stats:{launch_id or '_all'}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     pool = await get_pool()
     if pool is None:
         return {"configured": False}
@@ -205,7 +258,7 @@ async def get_users_stats(launch_id: Optional[str] = None) -> Dict[str, Any]:
         venta_steps = await _group_count(conn, "venta_step", where, params)
         tags = await _top_tags(conn, where, params, limit=20)
 
-    return {
+    result = {
         "configured": True,
         "launch_id": launch_id,
         "total": total,
@@ -216,6 +269,8 @@ async def get_users_stats(launch_id: Optional[str] = None) -> Dict[str, Any]:
         "venta_steps": _format_step_buckets(venta_steps, "venta_step"),
         "top_tags": tags,
     }
+    _cache_set(cache_key, result)
+    return result
 
 
 # Mapeo wa_launch_config → variables WAFLOW. Ajustable cuando aparezcan más tablas.

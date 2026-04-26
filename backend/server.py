@@ -2122,6 +2122,13 @@ async def pg_health(user: Dict[str, Any] = Depends(require_user)):
     return await _pg.health_check()
 
 
+@api_router.post("/pg/cache/clear")
+async def pg_cache_clear(user: Dict[str, Any] = Depends(require_user)):
+    """Invalida el cache TTL para forzar la próxima query a ir contra PG."""
+    _pg.cache_clear()
+    return {"ok": True}
+
+
 @api_router.get("/pg/launch-config/active")
 async def pg_launch_config_active(user: Dict[str, Any] = Depends(require_user)):
     if not _pg.is_configured():

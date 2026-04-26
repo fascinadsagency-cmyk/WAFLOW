@@ -407,6 +407,23 @@ Editor colaborativo multi-proyecto de secuencias de mensajes de WhatsApp para ag
 
 **Testing**: 54/54 PASS (43 iter-10 auth + 11 pg integration). Lint Python limpio.
 
+### Iter 25 (feb 2026) — TTL cache para queries PG
+**Motivo**: si varios usuarios miran el LIVE Monitor a la vez, repetir la misma agregación a PG cada 5s aplasta la DB. TTL cache in-memory de 60s.
+
+**Cambios `pg_client.py`**:
+- `_CACHE: Dict[str, (expires_at, value)]` con helpers `_cache_get`, `_cache_set`, `cache_clear`, `_cache_ttl()` (lee env var `PG_CACHE_TTL_SECS`, default 60).
+- Cache aplicado a `get_active_launch_config()` (key fija), `list_launch_configs(limit)` (key incluye limit), `get_users_stats(launch_id)` (key incluye launch_id).
+- `list_scheduled_messages` SIN cache: en LIVE Monitor el calendario debe verse al instante.
+- Auto-invalidación: si la DSN cambia o `cache_clear()` es invocado.
+
+**Cambios `server.py`**:
+- Nuevo endpoint `POST /api/pg/cache/clear` (requiere auth) para invalidar manualmente.
+
+**Cambios `.env`**:
+- Nueva env var `PG_CACHE_TTL_SECS=60`.
+
+**Testing iter-25** (`test_pg_integration.py` +5 tests): cache_set/get within TTL, auto-expiración, TTL=0 desactiva, cache_clear, endpoint requiere auth. **59/59 PASS**.
+
 ## Next Action Items
 - **P1** Extraer `IntakePanel` de App.jsx a `src/panels/IntakePanel.jsx` (~300 líneas dentro de App.jsx = 5150 tras iter-9) siguiendo el patrón de PublicReviewPage.
 - **P1** Continuar refactor App.jsx: `ConnectionsPanel`, `AutopilotPanel+LaunchWizard`, `MessageCard` (411 líneas, complejidad 107), `ProjectWorkspace` (480 líneas). Objetivo: App.jsx <3500 líneas.
