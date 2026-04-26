@@ -25,15 +25,22 @@ export function AuthCallback({ onComplete }) {
           credentials: "include",
           body: JSON.stringify({ session_id: sessionId }),
         });
-        const data = await r.json();
-        if (!r.ok) throw new Error(data.detail || "Error de autenticación");
+        // Leer body UNA sola vez como texto y parsear con seguridad.
+        // Evita "body stream already read" si algo intenta releer.
+        const raw = await r.text();
+        let data = {};
+        try { data = raw ? JSON.parse(raw) : {}; } catch { data = { detail: raw || "Respuesta no-JSON" }; }
+        if (!r.ok) {
+          const msg = data.detail || `HTTP ${r.status}`;
+          throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+        }
         setUser(data.user);
         // Limpiar hash y volver a la raíz
         window.history.replaceState(null, "", window.location.origin + "/");
         if (onComplete) onComplete();
         else await refresh();
       } catch (e) {
-        setErr(e.message);
+        setErr(e.message || String(e));
       }
     })();
   }, [setUser, refresh, onComplete]);

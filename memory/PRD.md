@@ -436,6 +436,20 @@ Editor colaborativo multi-proyecto de secuencias de mensajes de WhatsApp para ag
 
 **Testing**: 59/59 PASS (43 auth + 16 pg integration), 7 legacy skipped, 0 errores. Lint Python limpio. Backend arranca sin warnings. Smoke curl confirma que las routes PG siguen respondiendo 401 vía el nuevo router.
 
+### Iter 27 (feb 2026) — Bugfix login + admin idempotente
+**Reportado**: usuario veía `🔒 Failed to execute 'json' on 'Response': body stream already read` al hacer login con `fascinadsagency@gmail.com`.
+
+**Root cause**: React double-invoke del `useEffect` en StrictMode dev. La primera ejecución creó al usuario admin (era el primer login del sistema), pero la segunda intentó releer el body de la Response y disparó el error nativo de fetch. La sesión NO se persistió en cookie por el aborto.
+
+**Fix `LoginWall.jsx`** (`/app/frontend/src/pages/LoginWall.jsx`):
+- Cambiado `await r.json()` por `await r.text()` + parse seguro con try/catch. Body se lee 1 sola vez, idempotente bajo double-effect.
+- Mensaje de error ahora cae back a HTTP status si el body no es JSON.
+
+**Backend hardening** (`.env`):
+- Añadido `INITIAL_ADMIN_EMAILS=fascinadsagency@gmail.com` → garantía de que ese email siempre es admin aunque alguien limpie la BD o reinicie el sistema.
+
+**Operación**: borrada la sesión zombi previa (`db.user_sessions.delete_many({})`) para forzar relogin limpio. El user `fascinadsagency@gmail.com` con role `admin` ya existía en `db.users`, no hizo falta recrearlo.
+
 ## Next Action Items
 - **P1** Extraer `IntakePanel` de App.jsx a `src/panels/IntakePanel.jsx` (~300 líneas dentro de App.jsx = 5150 tras iter-9) siguiendo el patrón de PublicReviewPage.
 - **P1** Continuar refactor App.jsx: `ConnectionsPanel`, `AutopilotPanel+LaunchWizard`, `MessageCard` (411 líneas, complejidad 107), `ProjectWorkspace` (480 líneas). Objetivo: App.jsx <3500 líneas.
