@@ -252,7 +252,7 @@ function newProject({ name, strategy, client, notes, emoji, color, created_by } 
 
 
 // === PANEL VARIABLES ===
-function VariablesPanel({ vars, setVars, search, setSearch, onReset }) {
+function VariablesPanel({ vars, setVars, search, setSearch, onReset, onPullFromPG, pgEnabled }) {
   const filtered = useMemo(() => {
     if (!search) return vars;
     const s = search.toLowerCase();
@@ -280,6 +280,14 @@ function VariablesPanel({ vars, setVars, search, setSearch, onReset }) {
         className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-[11px] font-medium text-stone-600 border border-stone-200 rounded-md hover:border-stone-400 hover:text-stone-900">
         <RotateCcw size={12} /> Restaurar originales
       </button>
+      {pgEnabled && onPullFromPG && (
+        <button onClick={onPullFromPG}
+          data-testid="vars-pull-from-pg"
+          title="Lee wa_launch_config (launch activo) y rellena TITULO_WEBINAR, FECHA_WEBINAR, HORA_WEBINAR, NOMBRE_PRODUCTO, PRECIO_PRODUCTO, LINK_ZOOM y GROUP_JID_COMUNIDAD"
+          className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-[11px] font-medium text-sky-700 bg-sky-50 border border-sky-300 rounded-md hover:bg-sky-100">
+          🐘 Pull desde PostgreSQL (launch activo)
+        </button>
+      )}
       <div className="text-[10.5px] text-stone-500 bg-stone-50 border border-stone-200 rounded p-2 leading-relaxed">
         <strong>🔒 Variables bloqueadas:</strong> son técnicas (tracking UTM, IDs de n8n/Evolution, dominios base). Si las cambias sin saber, puedes romper el tracking o los envíos. Pulsa el candado para desbloquear bajo tu responsabilidad.
       </div>
@@ -4773,6 +4781,49 @@ function ProjectWorkspace({ project, onBack, me, onUpdateProject }) {
     setVars(getDefaultVarsForStrategy(project.strategy));
   };
 
+  // PostgreSQL — health check y pull del launch_config activo
+  const [pgHealth, setPgHealth] = useState(null); // {ok, configured, version?, error?}
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/pg/health`, { credentials: "include" });
+        if (cancelled) return;
+        if (r.ok) setPgHealth(await r.json());
+      } catch { /* offline o no auth */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const pullFromPG = async () => {
+    try {
+      const r = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/pg/launch-config/active`, { credentials: "include" });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        alert(`No se pudo leer PostgreSQL: ${err.detail || r.status}`);
+        return;
+      }
+      const data = await r.json();
+      if (!data.config) {
+        alert("No hay ningún launch con is_active=true en wa_launch_config.");
+        return;
+      }
+      const incoming = data.vars || {};
+      const incomingNames = Object.keys(incoming);
+      if (incomingNames.length === 0) { alert("El launch activo no tiene variables mapeables."); return; }
+      const ok = await askConfirm({
+        title: "Sincronizar desde PostgreSQL",
+        message: `Se actualizarán ${incomingNames.length} variables del launch activo: ${incomingNames.join(", ")}. Los demás valores se mantienen intactos.`,
+        confirmLabel: "Sincronizar",
+      });
+      if (!ok) return;
+      setVars(prev => prev.map(v => incoming[v.name] !== undefined ? { ...v, value: incoming[v.name] } : v));
+      logHistory("pull desde PG", `launch=${data.config.launch_id || "?"}`);
+    } catch (e) {
+      alert("Error de red: " + e.message);
+    }
+  };
+
   const totalMessages = FLOWS.reduce((s, f) => s + f.items.length, 0);
   const editCount = Object.keys(edits).filter(k => edits[k] !== undefined && edits[k] !== null).length;
   const undefinedVars = useMemo(() => {
@@ -4968,7 +5019,7 @@ function ProjectWorkspace({ project, onBack, me, onUpdateProject }) {
                     })}
                   </div>
                 ) : (
-                  <VariablesPanel vars={vars} setVars={setVars} search={search} setSearch={setSearch} onReset={resetVars} />
+                  <VariablesPanel vars={vars} setVars={setVars} search={search} setSearch={setSearch} onReset={resetVars} onPullFromPG={pullFromPG} pgEnabled={pgHealth?.configured && pgHealth?.ok} />
                 )}
               </div>
             </aside>

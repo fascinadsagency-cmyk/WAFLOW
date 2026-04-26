@@ -2110,6 +2110,54 @@ async def auth_invite_remove(email: str = Query(...), admin: Dict[str, Any] = De
 
 
 # ============================================================
+# POSTGRESQL READ-ONLY (catálogo maestro del bot WhatsApp del usuario)
+# Conecta a wa_launch_config / wa_scheduled_messages / wa_users.
+# Si PG_DSN no está definido, todos los endpoints devuelven 503.
+# ============================================================
+import pg_client as _pg  # noqa: E402  (import al final del archivo a propósito)
+
+
+@api_router.get("/pg/health")
+async def pg_health(user: Dict[str, Any] = Depends(require_user)):
+    return await _pg.health_check()
+
+
+@api_router.get("/pg/launch-config/active")
+async def pg_launch_config_active(user: Dict[str, Any] = Depends(require_user)):
+    if not _pg.is_configured():
+        raise HTTPException(status_code=503, detail="PG_DSN no configurado")
+    cfg = await _pg.get_active_launch_config()
+    if not cfg:
+        return {"ok": True, "config": None, "vars": {}}
+    return {"ok": True, "config": cfg, "vars": _pg.map_launch_config_to_vars(cfg)}
+
+
+@api_router.get("/pg/launch-config")
+async def pg_launch_config_list(limit: int = 20, user: Dict[str, Any] = Depends(require_user)):
+    if not _pg.is_configured():
+        raise HTTPException(status_code=503, detail="PG_DSN no configurado")
+    return {"ok": True, "configs": await _pg.list_launch_configs(limit=min(max(limit, 1), 200))}
+
+
+@api_router.get("/pg/scheduled-messages")
+async def pg_scheduled_messages(
+    launch_id: Optional[str] = None,
+    limit: int = 500,
+    user: Dict[str, Any] = Depends(require_user),
+):
+    if not _pg.is_configured():
+        raise HTTPException(status_code=503, detail="PG_DSN no configurado")
+    return {"ok": True, "messages": await _pg.list_scheduled_messages(launch_id, limit=min(max(limit, 1), 5000))}
+
+
+@api_router.get("/pg/users-stats")
+async def pg_users_stats(launch_id: Optional[str] = None, user: Dict[str, Any] = Depends(require_user)):
+    if not _pg.is_configured():
+        raise HTTPException(status_code=503, detail="PG_DSN no configurado")
+    return {"ok": True, "stats": await _pg.get_users_stats(launch_id)}
+
+
+# ============================================================
 # ROOT
 # ============================================================
 @api_router.get("/")
@@ -2138,3 +2186,7 @@ logger = logging.getLogger(__name__)
 @app.on_event("shutdown")
 async def shutdown_db_client():
     client.close()
+    try:
+        await _pg.close_pool()
+    except Exception:
+        pass

@@ -376,6 +376,27 @@ Editor colaborativo multi-proyecto de secuencias de mensajes de WhatsApp para ag
   - Persiste vía `onEditCopy(msgKey, newCopy)` → historial + autosave.
 - `data-testid="autofix-{msgKey}-{variable}"` para testing.
 
+### Iter 23 (feb 2026) — PostgreSQL Fase 1 (read-only, completo)
+**Motivo**: usuario eligió **opción A (whitelist + 5432 expuesto)** + **2c (las 3 tablas: wa_launch_config + wa_scheduled_messages + wa_users)**. Implementado todo el código para que cuando llegue la conexión real, sea solo añadir `PG_DSN` al `.env`.
+
+**Cambios backend**:
+- Nueva dependencia `asyncpg==0.31.0` en `requirements.txt`.
+- Nuevo módulo `/app/backend/pg_client.py` con: connection pool lazy-init que se recrea si la DSN cambia, `health_check()`, `is_configured()`, `get_active_launch_config()`, `list_launch_configs()`, `list_scheduled_messages()`, `get_users_stats()` (agregaciones por flow_step / venta_step / tags / compradores / reactivaciones), y `map_launch_config_to_vars()` con mapeo `wa_launch_config → {TITULO_WEBINAR, FECHA_WEBINAR, HORA_WEBINAR, NOMBRE_PRODUCTO, PRECIO_PRODUCTO, LINK_ZOOM, GROUP_JID_COMUNIDAD}`.
+- 5 endpoints en `server.py` (todos protegidos con `Depends(require_user)`): `GET /api/pg/health`, `GET /api/pg/launch-config/active`, `GET /api/pg/launch-config`, `GET /api/pg/scheduled-messages?launch_id=`, `GET /api/pg/users-stats?launch_id=`. Devuelven 503 si `PG_DSN` no está configurado.
+- `PG_DSN=` añadida a `/app/backend/.env` (vacía por defecto).
+- Shutdown hook cierra el pool limpiamente.
+
+**Cambios frontend**:
+- `ProjectWorkspace`: nuevo estado `pgHealth` (lo carga al montar el componente). Función `pullFromPG()` que llama al endpoint, valida que haya un launch activo, pide confirmación al usuario y mergea las variables incoming sobre las existentes (no destruye valores no mapeados).
+- `VariablesPanel`: nuevo botón **"🐘 Pull desde PostgreSQL (launch activo)"** que solo aparece si `pgHealth.configured && pgHealth.ok`. Loggea en historial.
+
+**Testing iter-23** (`/app/backend/tests/test_pg_integration.py`, 11 tests): auth en 5 endpoints (401 sin cookie), `health_check` sin DSN devuelve `configured:false`, `is_configured()` con DSN vacío/válido, mapeo `map_launch_config_to_vars` con date+time. **11/11 PASS**. iter-10 sigue 43/43 PASS.
+
+**Pendiente del usuario** (3 cosas):
+1. Configurar firewall en VPS para aceptar 5432 solo desde la IP de Emergent. La IP no está en docs públicas — abrir ticket en `support@emergent.sh` con job_id y URL preview pidiendo egress IP estable. Alternativas si Emergent no la fija: Cloudflare Tunnel o SSH tunnel reverso.
+2. Pasar el password real de `postgres` (en su mensaje aparece vacío).
+3. Una vez resuelto: añadir `PG_DSN=postgres://postgres:PASSWORD@IP_PUBLICA_VPS:5432/postgres?sslmode=disable` al `/app/backend/.env` y reiniciar backend. El botón "🐘 Pull desde PostgreSQL" aparecerá automáticamente en VariablesPanel.
+
 ## Next Action Items
 - **P1** Extraer `IntakePanel` de App.jsx a `src/panels/IntakePanel.jsx` (~300 líneas dentro de App.jsx = 5150 tras iter-9) siguiendo el patrón de PublicReviewPage.
 - **P1** Continuar refactor App.jsx: `ConnectionsPanel`, `AutopilotPanel+LaunchWizard`, `MessageCard` (411 líneas, complejidad 107), `ProjectWorkspace` (480 líneas). Objetivo: App.jsx <3500 líneas.
