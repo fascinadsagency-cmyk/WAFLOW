@@ -16,7 +16,6 @@ Notify config is always reset between tests via /api/storage/set.
 """
 import json
 import os
-import uuid
 import pytest
 import requests
 

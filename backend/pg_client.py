@@ -147,64 +147,74 @@ async def list_scheduled_messages(launch_id: Optional[str] = None, limit: int = 
         return [dict(r) for r in rows]
 
 
+def _build_users_filter(launch_id: Optional[str]) -> tuple:
+    """Devuelve (where_clause, where_keyword, params)."""
+    if launch_id:
+        return "WHERE launch_id = $1", "AND", [launch_id]
+    return "", "WHERE", []
+
+
+async def _count_users(conn, where: str, params: list) -> int:
+    return await conn.fetchval(f"SELECT COUNT(*) FROM wa_users {where}", *params) or 0
+
+
+async def _count_users_with(conn, where: str, kw: str, condition: str, params: list) -> int:
+    return await conn.fetchval(
+        f"SELECT COUNT(*) FROM wa_users {where} {kw} {condition}", *params
+    ) or 0
+
+
+async def _group_count(conn, column: str, where: str, params: list, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    sql = f"SELECT {column}, COUNT(*) as n FROM wa_users {where} GROUP BY {column} ORDER BY n DESC"
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+    return [dict(r) for r in await conn.fetch(sql, *params)]
+
+
+async def _top_tags(conn, where: str, params: list, limit: int = 20) -> List[Dict[str, Any]]:
+    sql = (
+        f"SELECT tag, COUNT(*) as n FROM ("
+        f"  SELECT UNNEST(tags) as tag FROM wa_users {where}"
+        f") t WHERE tag IS NOT NULL GROUP BY tag ORDER BY n DESC LIMIT {int(limit)}"
+    )
+    return [{"tag": r["tag"], "n": r["n"]} for r in await conn.fetch(sql, *params)]
+
+
+def _format_step_buckets(rows: List[Dict[str, Any]], col: str) -> List[Dict[str, Any]]:
+    return [{"step": r[col] or "(null)", "n": r["n"]} for r in rows]
+
+
+def _calc_tasa_compra(compradores: int, total: int) -> float:
+    if not total:
+        return 0
+    return round(compradores / total * 100, 2)
+
+
 async def get_users_stats(launch_id: Optional[str] = None) -> Dict[str, Any]:
-    """Estadísticas agregadas de wa_users:
-    - total leads
-    - por flow_step (Flujo A onboarding)
-    - por venta_step (Replay/Venta 1-1)
-    - count compradores
-    - top tags
-    - reactivaciones
-    """
+    """Estadísticas agregadas de wa_users (total, compradores, steps, tags, reactivaciones)."""
     pool = await get_pool()
     if pool is None:
         return {"configured": False}
 
-    where = ""
-    params: List[Any] = []
-    if launch_id:
-        where = "WHERE launch_id = $1"
-        params = [launch_id]
-
+    where, kw, params = _build_users_filter(launch_id)
     async with pool.acquire() as conn:
-        total = await conn.fetchval(f"SELECT COUNT(*) FROM wa_users {where}", *params)
-        compradores = await conn.fetchval(
-            f"SELECT COUNT(*) FROM wa_users {where} {'AND' if where else 'WHERE'} es_comprador = TRUE",
-            *params,
-        )
-        flow_steps = await conn.fetch(
-            f"SELECT flow_step, COUNT(*) as n FROM wa_users {where} "
-            f"GROUP BY flow_step ORDER BY n DESC",
-            *params,
-        )
-        venta_steps = await conn.fetch(
-            f"SELECT venta_step, COUNT(*) as n FROM wa_users {where} "
-            f"GROUP BY venta_step ORDER BY n DESC",
-            *params,
-        )
-        # Top tags (UNNEST del array tags)
-        tags = await conn.fetch(
-            f"SELECT tag, COUNT(*) as n FROM ("
-            f"  SELECT UNNEST(tags) as tag FROM wa_users {where}"
-            f") t GROUP BY tag ORDER BY n DESC LIMIT 20",
-            *params,
-        )
-        reactivaciones = await conn.fetchval(
-            f"SELECT COUNT(*) FROM wa_users {where} "
-            f"{'AND' if where else 'WHERE'} reactivacion_count > 0",
-            *params,
-        )
+        total = await _count_users(conn, where, params)
+        compradores = await _count_users_with(conn, where, kw, "es_comprador = TRUE", params)
+        reactivaciones = await _count_users_with(conn, where, kw, "reactivacion_count > 0", params)
+        flow_steps = await _group_count(conn, "flow_step", where, params)
+        venta_steps = await _group_count(conn, "venta_step", where, params)
+        tags = await _top_tags(conn, where, params, limit=20)
 
     return {
         "configured": True,
         "launch_id": launch_id,
-        "total": total or 0,
-        "compradores": compradores or 0,
-        "tasa_compra_pct": round((compradores or 0) / (total or 1) * 100, 2) if total else 0,
-        "reactivaciones": reactivaciones or 0,
-        "flow_steps": [{"step": r["flow_step"] or "(null)", "n": r["n"]} for r in flow_steps],
-        "venta_steps": [{"step": r["venta_step"] or "(null)", "n": r["n"]} for r in venta_steps],
-        "top_tags": [{"tag": r["tag"], "n": r["n"]} for r in tags if r["tag"]],
+        "total": total,
+        "compradores": compradores,
+        "tasa_compra_pct": _calc_tasa_compra(compradores, total),
+        "reactivaciones": reactivaciones,
+        "flow_steps": _format_step_buckets(flow_steps, "flow_step"),
+        "venta_steps": _format_step_buckets(venta_steps, "venta_step"),
+        "top_tags": tags,
     }
 
 

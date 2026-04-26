@@ -1,7 +1,6 @@
 """Iter-7 tests: /api/test-connection + smoke regressions for 4 operational fixes."""
 import os
 import json
-import pytest
 import uuid
 import requests
 from dotenv import load_dotenv

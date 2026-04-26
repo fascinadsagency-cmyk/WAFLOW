@@ -7,7 +7,6 @@
 """
 import os
 import sys
-import importlib
 import pytest
 import requests
 

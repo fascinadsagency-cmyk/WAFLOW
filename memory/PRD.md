@@ -397,6 +397,16 @@ Editor colaborativo multi-proyecto de secuencias de mensajes de WhatsApp para ag
 2. Pasar el password real de `postgres` (en su mensaje aparece vacío).
 3. Una vez resuelto: añadir `PG_DSN=postgres://postgres:PASSWORD@IP_PUBLICA_VPS:5432/postgres?sslmode=disable` al `/app/backend/.env` y reiniciar backend. El botón "🐘 Pull desde PostgreSQL" aparecerá automáticamente en VariablesPanel.
 
+### Iter 24 (feb 2026) — Code quality fix tras review externo
+**Hallazgos del reporte y resolución**:
+- ❌ "3 undefined variables" → en realidad **3 imports unused** (`importlib`, `uuid`, `pytest`) en archivos de test. Detectado con `ruff F821/F823/F841` que no encontró ninguna unbound real. Aplicado `ruff --select F401 --fix` para eliminarlos.
+- ✅ **`pg_client.get_users_stats` complejidad 16 → ~3**: extraídos 6 helpers (`_build_users_filter`, `_count_users`, `_count_users_with`, `_group_count`, `_top_tags`, `_format_step_buckets`, `_calc_tasa_compra`). El endpoint queda con 1 `if pool` + 1 `with` + 1 return.
+- ⚠️ **`is` vs `==` (77 ocurrencias)**: revisado *de nuevo*. TODAS son `is True/False/None` (PEP8 correcto, mismo falso positivo del linter externo que iter-8 e iter-18). No requiere cambio.
+- ⚠️ **44 imports en server.py**: válido pero requiere refactor grande (separar routes en módulos `routes/auth.py`, `routes/meta.py`, etc.). Movido a backlog P2.
+- ⚠️ **Type hints en tests (0%)**: bajo ROI; los helpers de producción ya están tipados.
+
+**Testing**: 54/54 PASS (43 iter-10 auth + 11 pg integration). Lint Python limpio.
+
 ## Next Action Items
 - **P1** Extraer `IntakePanel` de App.jsx a `src/panels/IntakePanel.jsx` (~300 líneas dentro de App.jsx = 5150 tras iter-9) siguiendo el patrón de PublicReviewPage.
 - **P1** Continuar refactor App.jsx: `ConnectionsPanel`, `AutopilotPanel+LaunchWizard`, `MessageCard` (411 líneas, complejidad 107), `ProjectWorkspace` (480 líneas). Objetivo: App.jsx <3500 líneas.
