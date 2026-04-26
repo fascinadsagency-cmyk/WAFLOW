@@ -450,6 +450,22 @@ Editor colaborativo multi-proyecto de secuencias de mensajes de WhatsApp para ag
 
 **Operación**: borrada la sesión zombi previa (`db.user_sessions.delete_many({})`) para forzar relogin limpio. El user `fascinadsagency@gmail.com` con role `admin` ya existía en `db.users`, no hizo falta recrearlo.
 
+### Iter 28 (feb 2026) — Catálogo de prompts del bot por fase del lanzamiento
+**Motivo**: El usuario compartió 8 prompts (Captación → Post-compra) que rigen las respuestas conversacionales del bot WhatsApp en n8n. Hasta ahora WAFLOW gestionaba copies de plantillas pero no el "cerebro" conversacional. Esta iteración cierra el círculo.
+
+**Cambios `App.jsx`**:
+- Constante `BOT_PROMPT_HEADER` con identidad + tono + reglas universales + info producto + contexto usuario (prefijo común a las 8 fases).
+- Constante `BOT_PHASES` = lista de 8 objetos `{ key, label, when, derive, body }`. Las 6 últimas tienen `derive: true` (notifican que esa fase deriva al `{NUMERO_SOPORTE}`).
+- Helper `buildDefaultBotPrompts()` para generar el state inicial.
+- Nuevo componente `BotPromptsPanel`: tabs por fase con contador de variables sin definir, editor con textarea, vista previa con valores reales reemplazados, toggle "Ver header común", botón "Copiar prompt completo" (header + body), botón "Restaurar prompt original de esta fase", warning si hay vars sin definir.
+- Estado `botPrompts` en `ProjectWorkspace` con autosave a `wa_editor:p:{pid}:botPrompts` y carga con merge defensivo (si añado fases nuevas en el futuro, los proyectos viejos las heredan).
+- Snapshots: `botPrompts` añadido a `data` + restauración con merge.
+- Tab nuevo `bot_prompts` con label "Prompts bot".
+
+**No requiere backend nuevo**: usa el storage shim KV existente.
+
+**Pendiente Fase 2** (cuando pidas): endpoint público `GET /api/bot-prompts/{project_id}/{phase}?token=` para que tu n8n lea el prompt activo según `flow_step` / `venta_step`.
+
 ## Next Action Items
 - **P1** Extraer `IntakePanel` de App.jsx a `src/panels/IntakePanel.jsx` (~300 líneas dentro de App.jsx = 5150 tras iter-9) siguiendo el patrón de PublicReviewPage.
 - **P1** Continuar refactor App.jsx: `ConnectionsPanel`, `AutopilotPanel+LaunchWizard`, `MessageCard` (411 líneas, complejidad 107), `ProjectWorkspace` (480 líneas). Objetivo: App.jsx <3500 líneas.

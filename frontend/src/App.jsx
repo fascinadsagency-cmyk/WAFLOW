@@ -224,6 +224,230 @@ REGLAS:
 5. Máximo 3 líneas por respuesta. Usa emojis con moderación (1-2 por mensaje).
 6. Termina con pregunta abierta para seguir conversación, salvo si el usuario está cerrando.`;
 
+// === PROMPTS DEL BOT POR FASE DEL LANZAMIENTO ===
+// 8 prompts (Captación → Post-compra) que el bot consume según el estado del lead.
+// Header común a TODOS los prompts (identidad + reglas universales). Se inyecta arriba.
+const BOT_PROMPT_HEADER = `IDENTIDAD:
+Eres el asistente de {NOMBRE_MARCA}, respondiendo por WhatsApp a {NOMBRE}.
+
+TU TONO:
+- Cercano y cálido, tuteas siempre
+- Natural, como un amigo que ayuda
+- Sin emojis excesivos (máximo 2 por mensaje)
+- Mensajes cortos: máximo 3 líneas
+
+REGLAS UNIVERSALES:
+1. NUNCA inventes información sobre el producto, fechas o procesos
+2. Si no sabes algo: "No tengo esa info ahora mismo, déjame checarlo"
+3. Responde siempre a la pregunta específica del usuario, no des respuestas genéricas
+
+INFORMACIÓN DEL PRODUCTO:
+- Nombre: {NOMBRE_PRODUCTO}
+- Precio: {PRECIO_PRODUCTO} (o {PRECIO_CUOTAS})
+- Beneficios principales:
+  1. {BENEFICIO_1}
+  2. {BENEFICIO_2}
+  3. {BENEFICIO_3}
+
+CONTEXTO DEL USUARIO:
+- Nombre: {NOMBRE}
+- Perfil: {PERFIL_LABORAL}
+- Motivación: {MOTIVACION_DOLOR}
+`;
+
+const BOT_PHASES = [
+  {
+    key: "captacion",
+    label: "1. Captación",
+    when: "Lead recién registrado, antes del webinar",
+    derive: false,
+    body: `FASE ACTUAL: CAPTACIÓN
+
+TU MISIÓN:
+Ayudar a {NOMBRE} a completar su registro para el webinar "{TITULO_WEBINAR}".
+
+QUÉ HACER:
+- Si pregunta por el webinar: "El webinar es el {FECHA_WEBINAR} a las {HORA_WEBINAR}. ¿Sigues con ganas de apuntarte?"
+- Si pregunta por el producto: "En el webinar {PROMESA_WEBINAR}. Después te cuento del programa completo 😊"
+- Si se traba en el cuestionario: Anímale con naturalidad, sin presionar
+
+QUÉ NO HACER:
+- NO hables del precio todavía
+- NO presiones para que complete el registro
+- NO derives a {NUMERO_SOPORTE} (bot maneja todo en esta fase)`,
+  },
+  {
+    key: "pre_webinar",
+    label: "2. Pre-webinar",
+    when: "Inscritos esperando el webinar",
+    derive: false,
+    body: `FASE ACTUAL: PRE-WEBINAR
+
+TU MISIÓN:
+Mantener a {NOMBRE} enganchado hasta el webinar del {FECHA_WEBINAR}.
+
+QUÉ HACER:
+- Si pregunta cuándo es: "{FECHA_WEBINAR} a las {HORA_WEBINAR}"
+- Si pregunta link de Zoom: "Te lo envío 30 min antes"
+- Si pregunta qué va a aprender: "{PROMESA_WEBINAR}"
+
+PROBLEMAS DE ASISTENCIA (MUY IMPORTANTE):
+
+Si dice "NO PUEDO ENTRAR":
+"Para entrar usa este link: {LINK_ZOOM}
+Te lo envío 30 minutos antes. Solo haz click y entras directo."
+
+Si dice "NO PODRÉ ASISTIR":
+"Entiendo que te haya surgido algo.
+Lo ideal es que estés en vivo porque:
+- Podrás hacer preguntas en directo
+- {NOMBRE_EXPERTO} adapta el contenido
+- Es mucho más valioso estar ahí
+Sobre la grabación: no puedo prometerte nada. Lo estudiaremos, pero haz lo posible por estar.
+¿Hay forma de que te organices para 1 hora?"
+
+Si pregunta "¿HABRÁ GRABACIÓN?":
+"No puedo prometerte grabación.
+Estar en vivo vale 10 veces más. Es {DURACION_WEBINAR} que pueden ahorrarte meses.
+Mi consejo: organízate para estar el {FECHA_WEBINAR} a las {HORA_WEBINAR}."`,
+  },
+  {
+    key: "replay_invitacion",
+    label: "3. Replay - Invitación",
+    when: "Post-webinar, primeros días de replay",
+    derive: true,
+    body: `FASE: REPLAY - INVITACIÓN
+
+TU MISIÓN:
+Convencer a {NOMBRE} de ver el replay.
+
+CUÁNDO DERIVAR A {NUMERO_SOPORTE}:
+- Testimonios específicos
+- Quiere hablar con alguien
+- Objeciones complejas
+
+QUÉ HACER:
+- Si pregunta por el link: "Te dejé el replay aquí: {LINK_REPLAY}"
+- Si pregunta si puede entrar: "Sí, hasta el {FECHA_CIERRE_DEFINITIVO}"
+
+MANEJO:
+- "No tengo tiempo": "Disponible hasta el {FECHA_CIERRE_BONOS}. ¿Cuándo puedes?"
+- "¿Vale la pena?": "En el replay explico {PROMESA_WEBINAR}"
+
+DERIVACIÓN:
+"Para eso habla con el equipo: {NUMERO_SOPORTE}"`,
+  },
+  {
+    key: "replay_presion",
+    label: "4. Replay - Presión",
+    when: "Últimos días de replay, urgencia bonos",
+    derive: true,
+    body: `FASE: REPLAY - PRESIÓN (últimos días)
+
+CUÁNDO DERIVAR A {NUMERO_SOPORTE}:
+- Intención clara de compra
+- Necesita casos específicos
+- Quiere hablar antes de decidir
+
+QUÉ HACER:
+- "Los bonos cierran el {FECHA_CIERRE_BONOS}"
+- "Los bonos son: {BONUS_1}, {BONUS_2}, {BONUS_3}"
+- Si muestra interés: "Te paso con el equipo: {NUMERO_SOPORTE}"
+
+TRANSICIÓN A VENTA:
+"{NOMBRE_PRODUCTO} es {PROMESA_WEBINAR}. Incluye: {BENEFICIO_1}, {BENEFICIO_2}, {BENEFICIO_3}. Precio: {PRECIO_PRODUCTO}. ¿Te paso con el equipo? Escríbeles: {NUMERO_SOPORTE}"`,
+  },
+  {
+    key: "venta_caliente",
+    label: "5. Venta Caliente",
+    when: "Primeras 48h post-webinar",
+    derive: true,
+    body: `FASE: VENTA CALIENTE (primeras 48h post-webinar)
+
+CUÁNDO DERIVAR A {NUMERO_SOPORTE}:
+- Pide testimonios/resultados
+- Pregunta garantías/reembolso
+- Dice "ya probé algo así"
+- Necesita hablar con alguien
+
+QUÉ HACER:
+- Precio: "{PRECIO_PRODUCTO}, o {PRECIO_CUOTAS}"
+- "Lo pienso": "¿Qué es lo que te gustaría pensar?"
+- Listo: "Link de pago: {LINK_PAGINA_VENTA}"
+
+OBJECIONES:
+- "No tengo dinero": "Por eso están las {PRECIO_CUOTAS}"
+- "Ya probé algo así": "Escribe al equipo: {NUMERO_SOPORTE}"
+- "Necesito resultados": "Te paso con el equipo: {NUMERO_SOPORTE}"`,
+  },
+  {
+    key: "venta_objeciones",
+    label: "6. Venta Objeciones",
+    when: "Días 3-5 del periodo de venta",
+    derive: true,
+    body: `FASE: VENTA OBJECIONES (días 3-5)
+
+DERIVAR A {NUMERO_SOPORTE} SI:
+- Duda sobre credibilidad
+- Miedo a "otro curso más"
+- Necesita hablar con equipo
+- Quiere resultados específicos
+- Pregunta garantías
+
+FRASE ESTÁNDAR:
+"Te entiendo {NOMBRE}. Para eso mejor habla directo con el equipo: {NUMERO_SOPORTE}"`,
+  },
+  {
+    key: "venta_cierre",
+    label: "7. Venta Cierre",
+    when: "Últimas 48h, urgencia máxima",
+    derive: true,
+    body: `FASE: VENTA CIERRE (últimas 48h)
+
+DERIVAR A {NUMERO_SOPORTE}:
+- CUALQUIER duda (quedan horas)
+- Necesita resolver rápido
+
+CIERRE FINAL:
+"{NOMBRE}, te hablo directo. Si {MOTIVACION_DOLOR} es real, esta es tu oportunidad.
+{NOMBRE_PRODUCTO} te da: {BENEFICIO_1}, {BENEFICIO_2}, {BENEFICIO_3}.
+Son {PRECIO_PRODUCTO}. Cierra hoy {FECHA_CIERRE_DEFINITIVO} 23:59h.
+Dudas? Escribe YA al equipo: {NUMERO_SOPORTE}
+¿Lo tienes claro? Link: {LINK_PAGINA_VENTA}"
+
+Si dice NO: "Entendido. Sin problema 🤝" (NO insistas)`,
+  },
+  {
+    key: "post_compra",
+    label: "8. Post-compra",
+    when: "Lead ya compró, soporte y onboarding",
+    derive: true,
+    body: `FASE: POST-COMPRA (usuario ya compró)
+
+DERIVAR TODO A {NUMERO_SOPORTE}:
+- Cualquier problema técnico
+- Preguntas onboarding
+- Solicitud reembolso
+- No puede acceder
+
+QUÉ HACER:
+- Acceso: "¿Recibiste el email? Si no, escribe: {NUMERO_SOPORTE}"
+- Comunidad: "Link: {LINK_COMUNIDAD_WHATSAPP}"
+- Onboarding: "Escribe a soporte: {NUMERO_SOPORTE}"
+- Problemas: "Escribe a soporte: {NUMERO_SOPORTE}"
+
+DERIVACIÓN ESTÁNDAR:
+"Escribe a soporte aquí: {NUMERO_SOPORTE}
+Te responden en minutos 👍"`,
+  },
+];
+
+function buildDefaultBotPrompts() {
+  const out = {};
+  BOT_PHASES.forEach(p => { out[p.key] = p.body; });
+  return out;
+}
+
 // === PROYECTOS ===
 const PROJECT_COLORS = ["#25D366", "#128C7E", "#075E54", "#DC2626", "#F59E0B", "#8B5CF6", "#0EA5E9", "#EC4899", "#10B981", "#6366F1"];
 const PROJECT_EMOJIS = ["🚀", "💼", "🎯", "🔥", "⚡", "💎", "🌟", "🎨", "📊", "🏆", "🌊", "🦄", "🌺", "🎪"];
@@ -2501,6 +2725,107 @@ function AutopilotPanel({
 // ====================================================================
 // PROMPT IA
 // ====================================================================
+function BotPromptsPanel({ prompts, setPrompts, vars }) {
+  const [activePhase, setActivePhase] = useState(BOT_PHASES[0].key);
+  const [showHeader, setShowHeader] = useState(false);
+  const [preview, setPreview] = useState(false);
+  const phase = BOT_PHASES.find(p => p.key === activePhase);
+  const body = prompts[activePhase] ?? phase.body;
+  const fullPrompt = `${BOT_PROMPT_HEADER}\n---\n${body}`;
+  const renderedFull = preview ? replaceVars(fullPrompt, vars) : fullPrompt;
+
+  const varsUsed = extractVarsUsed(body);
+  const undef = varsUsed.filter(n => !vars.find(v => v.name === n) && !RUNTIME_VARS.has(n));
+
+  const resetPhase = () => setPrompts({ ...prompts, [activePhase]: phase.body });
+  const onChange = (val) => setPrompts({ ...prompts, [activePhase]: val });
+
+  return (
+    <div className="max-w-5xl mx-auto" data-testid="bot-prompts-panel">
+      <div className="mb-6">
+        <h2 className="text-2xl font-bold text-stone-900">🤖 Prompts del bot por fase</h2>
+        <p className="text-sm text-stone-600 mt-1">
+          Estos prompts gobiernan cómo responde tu bot WhatsApp según el estado del lead.
+          Tu n8n debe seleccionar el prompt adecuado según <code className="font-mono text-xs bg-stone-100 px-1 rounded">flow_step</code> / <code className="font-mono text-xs bg-stone-100 px-1 rounded">venta_step</code>.
+        </p>
+      </div>
+
+      {/* Tabs por fase */}
+      <div className="flex gap-1 flex-wrap mb-4 border-b border-stone-200 pb-2">
+        {BOT_PHASES.map(p => {
+          const isActive = activePhase === p.key;
+          const phaseUndef = (() => {
+            const u = extractVarsUsed(prompts[p.key] ?? p.body);
+            return u.filter(n => !vars.find(v => v.name === n) && !RUNTIME_VARS.has(n)).length;
+          })();
+          return (
+            <button key={p.key} onClick={() => setActivePhase(p.key)}
+              data-testid={`bot-phase-tab-${p.key}`}
+              className={`relative px-3 py-1.5 text-xs font-medium rounded-md transition ${isActive ? "bg-stone-900 text-white" : "text-stone-600 hover:bg-stone-100"}`}>
+              {p.label}
+              {phaseUndef > 0 && <span className="ml-1.5 text-[10px] bg-amber-200 text-amber-900 rounded-full px-1.5">{phaseUndef}</span>}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Metadata fase */}
+      <div className="mb-3 flex items-baseline justify-between gap-2 flex-wrap">
+        <div>
+          <div className="text-[11px] uppercase tracking-widest text-stone-500">Cuándo se usa</div>
+          <div className="text-sm text-stone-800">{phase.when}</div>
+        </div>
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {phase.derive && <span className="text-[10px] bg-amber-50 text-amber-800 border border-amber-200 px-1.5 py-0.5 rounded">⚠ deriva a {"{NUMERO_SOPORTE}"}</span>}
+          <button onClick={() => setPreview(!preview)} className="text-[11px] px-2.5 py-1 border border-stone-300 rounded-md hover:border-stone-900">
+            {preview ? "Ver con vars" : "Vista previa con valores"}
+          </button>
+          <button onClick={() => setShowHeader(!showHeader)} className="text-[11px] px-2.5 py-1 border border-stone-300 rounded-md hover:border-stone-900">
+            {showHeader ? "Ocultar header común" : "Ver header común"}
+          </button>
+          <CopyButton text={preview ? replaceVars(fullPrompt, vars) : fullPrompt} label="Copiar prompt completo" />
+        </div>
+      </div>
+
+      {showHeader && (
+        <div className="mb-4 p-3 bg-stone-50 border border-stone-200 rounded-md text-[11.5px] text-stone-700 whitespace-pre-wrap font-mono leading-relaxed">
+          {BOT_PROMPT_HEADER}
+        </div>
+      )}
+
+      {/* Editor cuerpo de la fase */}
+      {preview ? (
+        <pre className="w-full p-3 text-sm bg-white border border-stone-300 rounded-md whitespace-pre-wrap font-mono">
+          {replaceVars(body, vars)}
+        </pre>
+      ) : (
+        <textarea value={body} onChange={e => onChange(e.target.value)}
+          data-testid={`bot-phase-textarea-${activePhase}`}
+          className="w-full min-h-[460px] p-3 text-sm font-mono bg-white border border-stone-300 rounded-md focus:outline-none focus:border-stone-900" />
+      )}
+
+      <div className="mt-2 flex justify-between items-center text-[11px] text-stone-500 flex-wrap gap-2">
+        <span>{body.length} chars · {varsUsed.length} variables usadas{undef.length > 0 ? ` · ⚠ ${undef.length} sin definir` : ""}</span>
+        <button onClick={resetPhase}
+          data-testid={`bot-phase-reset-${activePhase}`}
+          className="text-[11px] text-stone-500 hover:text-stone-900">
+          ↺ Restaurar prompt original de esta fase
+        </button>
+      </div>
+
+      {undef.length > 0 && (
+        <div className="mt-3 p-2.5 bg-amber-50 border border-amber-200 rounded-md text-[11.5px] text-amber-900">
+          <strong>Variables sin definir en este prompt:</strong>{" "}
+          {undef.map(n => <code key={n} className="font-mono bg-white px-1 rounded mr-1">{`{${n}}`}</code>)}
+          <div className="mt-1 text-[11px] text-amber-700">
+            Defínelas en la pestaña <em>Flujos → Variables</em> o tu bot las dejará literal en sus respuestas.
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AIPromptPanel({ aiPrompt, setAIPrompt, vars }) {
   const [preview, setPreview] = useState(false);
   const [showChat, setShowChat] = useState(false);
@@ -4561,6 +4886,7 @@ function ProjectWorkspace({ project, onBack, me, onUpdateProject }) {
     platform: "", formHasPhone: null, whatsappNumber: "", webinarDate: "",
   });
   const [aiPrompt, setAIPrompt] = useState(DEFAULT_AI_PROMPT);
+  const [botPrompts, setBotPrompts] = useState(buildDefaultBotPrompts);
   const [commentsByMsg, setCommentsByMsg] = useState({});
   const [variantsByMsg, setVariantsByMsg] = useState({});
   const [approvalByMsg, setApprovalByMsg] = useState({});
@@ -4612,6 +4938,8 @@ function ProjectWorkspace({ project, onBack, me, onUpdateProject }) {
       const scap = await loadFromStorage(pk(pid, "captacion"));
       if (scap) setCaptacionConfig(scap);
       if (sp) setAIPrompt(sp);
+      const sbp = await loadFromStorage(pk(pid, "botPrompts"));
+      if (sbp && typeof sbp === "object") setBotPrompts({ ...buildDefaultBotPrompts(), ...sbp });
       if (scmm) setCommentsByMsg(scmm);
       if (svar) setVariantsByMsg(svar);
       if (sapp) setApprovalByMsg(sapp);
@@ -4640,6 +4968,7 @@ function ProjectWorkspace({ project, onBack, me, onUpdateProject }) {
   useEffect(() => debouncedSave("custom_msgs", customMsgs), [customMsgs, loaded, debouncedSave]);
   useEffect(() => debouncedSave("captacion", captacionConfig), [captacionConfig, loaded, debouncedSave]);
   useEffect(() => debouncedSave("aiPrompt", aiPrompt), [aiPrompt, loaded, debouncedSave]);
+  useEffect(() => debouncedSave("botPrompts", botPrompts), [botPrompts, loaded, debouncedSave]);
   useEffect(() => debouncedSave("comments", commentsByMsg), [commentsByMsg, loaded, debouncedSave]);
   useEffect(() => debouncedSave("variants", variantsByMsg), [variantsByMsg, loaded, debouncedSave]);
   useEffect(() => debouncedSave("approval", approvalByMsg), [approvalByMsg, loaded, debouncedSave]);
@@ -4751,7 +5080,7 @@ function ProjectWorkspace({ project, onBack, me, onUpdateProject }) {
   const createSnapshot = (label) => {
     const snap = {
       id: Date.now().toString(36), label, at: Date.now(), author: me || "Anónimo",
-      data: { vars, edits, creatives, connections, aiPrompt, commentsByMsg, variantsByMsg, approvalByMsg, templatesByMsg },
+      data: { vars, edits, creatives, connections, aiPrompt, botPrompts, commentsByMsg, variantsByMsg, approvalByMsg, templatesByMsg },
     };
     setSnapshots(s => [snap, ...s]);
     logHistory("creó snapshot", label);
@@ -4765,6 +5094,7 @@ function ProjectWorkspace({ project, onBack, me, onUpdateProject }) {
     setCreatives(s.data.creatives);
     setConnections(s.data.connections);
     setAIPrompt(s.data.aiPrompt);
+    if (s.data.botPrompts) setBotPrompts({ ...buildDefaultBotPrompts(), ...s.data.botPrompts });
     setCommentsByMsg(s.data.commentsByMsg || {});
     setVariantsByMsg(s.data.variantsByMsg || {});
     setApprovalByMsg(s.data.approvalByMsg || {});
@@ -4903,6 +5233,7 @@ function ProjectWorkspace({ project, onBack, me, onUpdateProject }) {
     { key: "connections", label: "Conexiones", icon: Plug },
     { key: "captacion", label: "Captación", icon: Zap },
     { key: "ai", label: "Prompt IA", icon: Bot },
+    { key: "bot_prompts", label: "Prompts bot", icon: Bot },
   ];
 
   const goToMessage = (flowKey, msgKey) => { setActiveFlow(flowKey); setActiveTab("flows"); setScrollToMsg(msgKey); };
@@ -5060,6 +5391,7 @@ function ProjectWorkspace({ project, onBack, me, onUpdateProject }) {
         {activeTab === "history" && <main className="flex-1 min-w-0 px-8 py-8"><HistoryPanel history={history} /></main>}
         {activeTab === "connections" && <main className="flex-1 min-w-0 px-8 py-8"><ConnectionsPanel conn={connections} setConn={setConnections} projectName={project.name} notifyConfig={notifyConfig} setNotifyConfig={setNotifyConfig} /></main>}
         {activeTab === "ai" && <main className="flex-1 min-w-0 px-8 py-8"><AIPromptPanel aiPrompt={aiPrompt} setAIPrompt={setAIPrompt} vars={vars} /></main>}
+        {activeTab === "bot_prompts" && <main className="flex-1 min-w-0 px-8 py-8"><BotPromptsPanel prompts={botPrompts} setPrompts={setBotPrompts} vars={vars} /></main>}
         {activeTab === "captacion" && <main className="flex-1 min-w-0 px-8 py-8"><CaptacionPanel config={captacionConfig} setConfig={setCaptacionConfig} projectName={project.name} n8nWebhookUrl={connections.n8nWebhookUrl} /></main>}
       </div>
 
