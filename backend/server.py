@@ -1,10 +1,7 @@
 from fastapi import FastAPI, APIRouter, HTTPException, Query, Request, Response as FastAPIResponse, Depends
-from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
-from pathlib import Path
 from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional, Any, Dict
 import uuid
@@ -12,76 +9,25 @@ from datetime import datetime, timezone, timedelta
 import httpx
 import re as _re
 
-ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
-
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+# Setup centralizado: db client + auth deps
+from db_setup import client, db
+from auth_deps import (
+    SESSION_COOKIE_NAME,
+    SESSION_DURATION_DAYS,
+    require_user,
+    require_admin,
+)
+import pg_client as _pg
+import pg_routes
 
 app = FastAPI(title="WhatsApp Flow Editor API")
 api_router = APIRouter(prefix="/api")
 
 
 # ============================================================
-# AUTH HELPERS (movidos arriba para poder usarlos en Depends() de endpoints)
+# AUTH HELPERS — definidos en auth_deps.py para usarse desde routes/.
+# Re-exportados arriba.
 # ============================================================
-SESSION_COOKIE_NAME = "waflow_session"
-SESSION_DURATION_DAYS = 7
-
-
-def _extract_session_token(request: Request) -> Optional[str]:
-    """Cookie (preferente) → Authorization: Bearer (fallback)."""
-    token = request.cookies.get(SESSION_COOKIE_NAME)
-    if token:
-        return token
-    auth = request.headers.get("authorization") or ""
-    if auth.lower().startswith("bearer "):
-        return auth.split(" ", 1)[1].strip()
-    return None
-
-
-def _parse_expires_at(raw: Any) -> Optional[datetime]:
-    if not raw:
-        return None
-    if isinstance(raw, str):
-        try:
-            raw = datetime.fromisoformat(raw)
-        except Exception:
-            return None
-    if raw.tzinfo is None:
-        raw = raw.replace(tzinfo=timezone.utc)
-    return raw
-
-
-async def _get_session_from_request(request: Request) -> Optional[Dict[str, Any]]:
-    """Devuelve el user doc (sin _id) si hay sesión válida; None si no."""
-    token = _extract_session_token(request)
-    if not token:
-        return None
-    session = await db.user_sessions.find_one({"session_token": token}, {"_id": 0})
-    if not session:
-        return None
-    expires_at = _parse_expires_at(session.get("expires_at"))
-    if expires_at and expires_at < datetime.now(timezone.utc):
-        await db.user_sessions.delete_one({"session_token": token})
-        return None
-    return await db.users.find_one({"user_id": session["user_id"]}, {"_id": 0})
-
-
-async def require_user(request: Request) -> Dict[str, Any]:
-    user = await _get_session_from_request(request)
-    if not user:
-        raise HTTPException(status_code=401, detail="No autenticado")
-    return user
-
-
-async def require_admin(request: Request) -> Dict[str, Any]:
-    user = await require_user(request)
-    if user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Solo el admin puede hacer esta acción")
-    return user
 
 
 # ============================================================
@@ -2111,57 +2057,10 @@ async def auth_invite_remove(email: str = Query(...), admin: Dict[str, Any] = De
 
 # ============================================================
 # POSTGRESQL READ-ONLY (catálogo maestro del bot WhatsApp del usuario)
-# Conecta a wa_launch_config / wa_scheduled_messages / wa_users.
+# Endpoints definidos en pg_routes.py — incluidos al final.
 # Si PG_DSN no está definido, todos los endpoints devuelven 503.
 # ============================================================
-import pg_client as _pg  # noqa: E402  (import al final del archivo a propósito)
-
-
-@api_router.get("/pg/health")
-async def pg_health(user: Dict[str, Any] = Depends(require_user)):
-    return await _pg.health_check()
-
-
-@api_router.post("/pg/cache/clear")
-async def pg_cache_clear(user: Dict[str, Any] = Depends(require_user)):
-    """Invalida el cache TTL para forzar la próxima query a ir contra PG."""
-    _pg.cache_clear()
-    return {"ok": True}
-
-
-@api_router.get("/pg/launch-config/active")
-async def pg_launch_config_active(user: Dict[str, Any] = Depends(require_user)):
-    if not _pg.is_configured():
-        raise HTTPException(status_code=503, detail="PG_DSN no configurado")
-    cfg = await _pg.get_active_launch_config()
-    if not cfg:
-        return {"ok": True, "config": None, "vars": {}}
-    return {"ok": True, "config": cfg, "vars": _pg.map_launch_config_to_vars(cfg)}
-
-
-@api_router.get("/pg/launch-config")
-async def pg_launch_config_list(limit: int = 20, user: Dict[str, Any] = Depends(require_user)):
-    if not _pg.is_configured():
-        raise HTTPException(status_code=503, detail="PG_DSN no configurado")
-    return {"ok": True, "configs": await _pg.list_launch_configs(limit=min(max(limit, 1), 200))}
-
-
-@api_router.get("/pg/scheduled-messages")
-async def pg_scheduled_messages(
-    launch_id: Optional[str] = None,
-    limit: int = 500,
-    user: Dict[str, Any] = Depends(require_user),
-):
-    if not _pg.is_configured():
-        raise HTTPException(status_code=503, detail="PG_DSN no configurado")
-    return {"ok": True, "messages": await _pg.list_scheduled_messages(launch_id, limit=min(max(limit, 1), 5000))}
-
-
-@api_router.get("/pg/users-stats")
-async def pg_users_stats(launch_id: Optional[str] = None, user: Dict[str, Any] = Depends(require_user)):
-    if not _pg.is_configured():
-        raise HTTPException(status_code=503, detail="PG_DSN no configurado")
-    return {"ok": True, "stats": await _pg.get_users_stats(launch_id)}
+# (router incluido tras api_router más abajo)
 
 
 # ============================================================
@@ -2172,8 +2071,9 @@ async def root():
     return {"message": "WhatsApp Flow Editor API running"}
 
 
-# Include router
+# Include routers
 app.include_router(api_router)
+app.include_router(pg_routes.router)
 
 app.add_middleware(
     CORSMiddleware,
