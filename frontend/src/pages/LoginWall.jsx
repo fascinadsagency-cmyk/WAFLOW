@@ -1,23 +1,38 @@
 // Login wall + callback handler para Emergent Google Auth.
 // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useAuth } from "../hooks/useAuth";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
+// Guard a nivel módulo (sobrevive a remounts del componente).
+// React StrictMode + setUser triggerea remounts en dev, y el guard con useRef
+// se resetea en cada mount → la 2ª invocación intenta releer la misma Response.
+// Con este Set módulo-level, garantizamos que cada session_id se procesa 1 sola vez
+// en TODA la sesión del browser tab.
+const _processedSessionIds = new Set();
+let _activeCallbackPromise = null;
+
 export function AuthCallback({ onComplete }) {
   const { setUser, refresh } = useAuth();
-  const hasProcessed = useRef(false);
   const [err, setErr] = useState(null);
 
   useEffect(() => {
-    if (hasProcessed.current) return;
-    hasProcessed.current = true;
-    (async () => {
-      const hash = window.location.hash || "";
-      const match = hash.match(/session_id=([^&]+)/);
-      if (!match) { setErr("No se recibió session_id"); return; }
-      const sessionId = match[1];
+    const hash = window.location.hash || "";
+    const match = hash.match(/session_id=([^&]+)/);
+    if (!match) { setErr("No se recibió session_id"); return; }
+    const sessionId = match[1];
+
+    // Si ya procesamos este session_id en este tab, salir silenciosamente.
+    // El primer call habrá hecho setUser() y limpiado el hash.
+    if (_processedSessionIds.has(sessionId)) return;
+
+    // Si hay otro callback en vuelo con este mismo id (no debería, pero por si),
+    // no disparar otro fetch. await sobre la promesa existente.
+    if (_activeCallbackPromise) return;
+
+    _processedSessionIds.add(sessionId);
+    _activeCallbackPromise = (async () => {
       try {
         const r = await fetch(`${API}/auth/callback`, {
           method: "POST",
@@ -25,22 +40,26 @@ export function AuthCallback({ onComplete }) {
           credentials: "include",
           body: JSON.stringify({ session_id: sessionId }),
         });
-        // Leer body UNA sola vez como texto y parsear con seguridad.
-        // Evita "body stream already read" si algo intenta releer.
-        const raw = await r.text();
+        // r.json() lee el body 1 sola vez. Como _processedSessionIds garantiza
+        // que NO entramos aquí dos veces para el mismo sessionId, podemos
+        // usar el método nativo sin trucos.
         let data = {};
-        try { data = raw ? JSON.parse(raw) : {}; } catch { data = { detail: raw || "Respuesta no-JSON" }; }
+        try { data = await r.json(); } catch { /* respuesta vacía o no-JSON */ }
         if (!r.ok) {
           const msg = data.detail || `HTTP ${r.status}`;
           throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
         }
         setUser(data.user);
-        // Limpiar hash y volver a la raíz
         window.history.replaceState(null, "", window.location.origin + "/");
         if (onComplete) onComplete();
         else await refresh();
       } catch (e) {
         setErr(e.message || String(e));
+        // Permitir reintento con el mismo session_id si falla (poco probable
+        // que el user vea el botón "Reintentar" sin recargar, pero por higiene)
+        _processedSessionIds.delete(sessionId);
+      } finally {
+        _activeCallbackPromise = null;
       }
     })();
   }, [setUser, refresh, onComplete]);

@@ -466,6 +466,22 @@ Editor colaborativo multi-proyecto de secuencias de mensajes de WhatsApp para ag
 
 **Pendiente Fase 2** (cuando pidas): endpoint público `GET /api/bot-prompts/{project_id}/{phase}?token=` para que tu n8n lea el prompt activo según `flow_step` / `venta_step`.
 
+### Iter 29 (feb 2026) — Bugfix login (root-cause real)
+**Reportado**: persistía `Failed to execute 'text' on 'Response': body stream already read` tras iter-27 (que ya intentó fix con `r.text()`).
+
+**Root cause real**: el `useRef` guard se resetea cuando el componente AuthCallback se REMONTA. Pasos:
+1. Primer effect → `useRef.current = true` → fetch OK → `setUser(data.user)`.
+2. AuthProvider re-renderiza con user logueado → LoginWall se desmonta.
+3. React rerender vuelve a montar AuthCallback (StrictMode behaviour) con `useRef` FRESCO (`current = false`).
+4. Segundo effect dispara otro fetch sobre la misma response viva → "body stream already read".
+
+**Fix definitivo (`pages/LoginWall.jsx`)**:
+- Guard movido a constante a nivel módulo `_processedSessionIds = new Set()` y `_activeCallbackPromise` (sobreviven a remounts).
+- Vuelto a usar `r.json()` (es seguro porque solo se ejecuta 1 vez por session_id).
+- En caso de error, el sessionId se elimina del Set para permitir reintentos.
+
+**Operación**: borrada sesión zombi previa para forzar relogin limpio.
+
 ## Next Action Items
 - **P1** Extraer `IntakePanel` de App.jsx a `src/panels/IntakePanel.jsx` (~300 líneas dentro de App.jsx = 5150 tras iter-9) siguiendo el patrón de PublicReviewPage.
 - **P1** Continuar refactor App.jsx: `ConnectionsPanel`, `AutopilotPanel+LaunchWizard`, `MessageCard` (411 líneas, complejidad 107), `ProjectWorkspace` (480 líneas). Objetivo: App.jsx <3500 líneas.
