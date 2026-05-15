@@ -2021,6 +2021,108 @@ def _verify_password(plain: str, hashed: str) -> bool:
         return False
 
 
+class RegisterBody(BaseModel):
+    email: EmailStr
+    password: str
+    name: Optional[str] = ""
+
+
+@api_router.post("/auth/register")
+async def auth_register(body: RegisterBody, response: FastAPIResponse):
+    """Registro con email+password.
+    Política: solo se permite si el email está en INITIAL_ADMIN_EMAILS, en
+    db.auth_allowlist, o si NO hay ningún user en la BD (primer admin).
+    Crea user + sesión + cookie en una sola llamada.
+    """
+    email = (body.email or "").strip().lower()
+    if len(body.password) < 8:
+        raise HTTPException(status_code=400, detail="Password debe tener al menos 8 caracteres")
+
+    existing = await db.users.find_one({"email": email}, {"_id": 0})
+    if existing:
+        raise HTTPException(status_code=409, detail="Ya existe un usuario con ese email. Usa Iniciar sesión.")
+
+    initial_admins = {e.strip().lower() for e in os.environ.get("INITIAL_ADMIN_EMAILS", "").split(",") if e.strip()}
+    user_count = await db.users.count_documents({})
+    is_initial_admin = email in initial_admins
+    is_first_user = user_count == 0
+
+    if is_initial_admin or is_first_user:
+        role = "admin"
+        invited_by = None
+    else:
+        allow_entry = await db.auth_allowlist.find_one({"email": email}, {"_id": 0})
+        if not allow_entry:
+            raise HTTPException(status_code=403, detail="Tu email no está autorizado. Pide al admin que te invite.")
+        role = allow_entry.get("role", "editor")
+        invited_by = allow_entry.get("invited_by")
+
+    now = datetime.now(timezone.utc)
+    user_id = f"user_{uuid.uuid4().hex[:12]}"
+    name = (body.name or "").strip() or email.split("@")[0]
+    new_user = {
+        "user_id": user_id,
+        "email": email,
+        "name": name,
+        "google_id": None,
+        "avatar_url": None,
+        "role": role,
+        "workspace_id": "default",
+        "created_at": now,
+        "invited_by": invited_by,
+        "password_hash": _hash_password(body.password),
+        "password_updated_at": now,
+    }
+    await db.users.insert_one(new_user)
+
+    # Crear sesión + cookie (auto-login tras registro)
+    session_token = uuid.uuid4().hex + uuid.uuid4().hex
+    expires_at = now + timedelta(days=SESSION_DURATION_DAYS)
+    await db.user_sessions.insert_one({
+        "session_token": session_token,
+        "user_id": user_id,
+        "created_at": now,
+        "expires_at": expires_at,
+        "method": "register",
+    })
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME, value=session_token,
+        httponly=True, secure=True, samesite="none", path="/",
+        max_age=SESSION_DURATION_DAYS * 24 * 3600,
+    )
+    return {
+        "ok": True,
+        "user": {
+            "user_id": user_id, "email": email, "name": name,
+            "avatar_url": None, "role": role, "workspace_id": "default",
+        },
+    }
+
+
+class ChangePasswordBody(BaseModel):
+    current_password: str
+    new_password: str
+
+
+@api_router.post("/auth/change-password")
+async def auth_change_password(body: ChangePasswordBody, user: Dict[str, Any] = Depends(require_user)):
+    """Permite a un usuario logueado cambiar su propio password."""
+    if len(body.new_password) < 8:
+        raise HTTPException(status_code=400, detail="Password nuevo debe tener al menos 8 caracteres")
+    full_user = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    current_hash = (full_user or {}).get("password_hash") or ""
+    if not current_hash or not _verify_password(body.current_password, current_hash):
+        raise HTTPException(status_code=401, detail="Password actual incorrecto")
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {
+            "password_hash": _hash_password(body.new_password),
+            "password_updated_at": datetime.now(timezone.utc),
+        }},
+    )
+    return {"ok": True}
+
+
 class EmergencyLoginBody(BaseModel):
     email: EmailStr
     password: str

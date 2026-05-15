@@ -500,6 +500,31 @@ Editor colaborativo multi-proyecto de secuencias de mensajes de WhatsApp para ag
 
 **Testing**: smoke curl end-to-end → login devuelve 200 + cookie + `/api/auth/me` con cookie responde admin user.
 
+### Iter 31 (feb 2026) — Email/password como flujo principal de auth
+**Motivo**: el usuario quiere ser independiente de Emergent Auth (que sigue dando 403). Email/password pasa a ser el flujo PRINCIPAL, Google queda como opción secundaria.
+
+**Cambios backend (`server.py`)**:
+- Nuevo endpoint `POST /api/auth/register`: crea user + sesión + cookie en una llamada. Política:
+  - `INITIAL_ADMIN_EMAILS` → admin automático.
+  - Primer user del sistema (BD vacía) → admin automático.
+  - Resto → debe estar en `db.auth_allowlist` (rol del allowlist), si no → 403.
+  - 409 si el email ya existe.
+- Nuevo endpoint `POST /api/auth/change-password`: requiere user logueado + current password correcto. Min 8 chars.
+- Auto-login tras registro (cookie sesión idéntica a login).
+
+**Cambios frontend (`LoginWall.jsx`, rewrite completo)**:
+- Form email+password como flujo principal.
+- Tabs "Iniciar sesión" / "Crear cuenta" en el header.
+- Validación min 8 chars en registro.
+- Mensajes de error inline.
+- Google queda como botón discreto bajo "¿Prefieres entrar con Google?" en el footer (clicable, no removido por si Emergent desbloquea).
+
+**Smoke tests** (curl):
+- Login existente → 200 + cookie OK.
+- Registro email no autorizado → 403.
+- Registro email duplicado → 409.
+- Change-password con current wrong → 401.
+
 ## Next Action Items
 - **P1** Extraer `IntakePanel` de App.jsx a `src/panels/IntakePanel.jsx` (~300 líneas dentro de App.jsx = 5150 tras iter-9) siguiendo el patrón de PublicReviewPage.
 - **P1** Continuar refactor App.jsx: `ConnectionsPanel`, `AutopilotPanel+LaunchWizard`, `MessageCard` (411 líneas, complejidad 107), `ProjectWorkspace` (480 líneas). Objetivo: App.jsx <3500 líneas.
