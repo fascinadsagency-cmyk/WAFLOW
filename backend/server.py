@@ -2002,6 +2002,108 @@ async def auth_me(user: Dict[str, Any] = Depends(require_user)):
     }
 
 
+# ============================================================
+# EMERGENCY LOGIN — email + password.
+# Pensado para casos donde Emergent Auth está caído (403) o el admin
+# necesita acceder sin Google. Coexiste con el callback OAuth.
+# ============================================================
+import bcrypt as _bcrypt
+
+
+def _hash_password(plain: str) -> str:
+    return _bcrypt.hashpw(plain.encode("utf-8"), _bcrypt.gensalt()).decode("utf-8")
+
+
+def _verify_password(plain: str, hashed: str) -> bool:
+    try:
+        return _bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+    except Exception:
+        return False
+
+
+class EmergencyLoginBody(BaseModel):
+    email: EmailStr
+    password: str
+
+
+@api_router.post("/auth/login")
+async def auth_login(body: EmergencyLoginBody, response: FastAPIResponse):
+    """Login con email+password. Requiere que el user EXISTA en db.users y
+    tenga `password_hash`. Para inicializar/cambiar el hash usar
+    POST /api/auth/set-emergency-password.
+    """
+    email = (body.email or "").strip().lower()
+    user = await db.users.find_one({"email": email}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=401, detail="Credenciales inválidas")
+    pwd_hash = user.get("password_hash") or ""
+    if not pwd_hash or not _verify_password(body.password, pwd_hash):
+        raise HTTPException(status_code=401, detail="Credenciales inválidas")
+
+    # Reutilizar el sistema de sesiones existente (cookie waflow_session)
+    session_token = uuid.uuid4().hex + uuid.uuid4().hex  # 64 chars
+    expires_at = datetime.now(timezone.utc) + timedelta(days=SESSION_DURATION_DAYS)
+    await db.user_sessions.insert_one({
+        "session_token": session_token,
+        "user_id": user["user_id"],
+        "created_at": datetime.now(timezone.utc),
+        "expires_at": expires_at,
+        "method": "password",
+    })
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=session_token,
+        httponly=True,
+        secure=True,
+        samesite="none",
+        path="/",
+        max_age=SESSION_DURATION_DAYS * 24 * 3600,
+    )
+    return {
+        "ok": True,
+        "user": {
+            "user_id": user["user_id"],
+            "email": user["email"],
+            "name": user.get("name"),
+            "avatar_url": user.get("avatar_url"),
+            "role": user.get("role", "editor"),
+            "workspace_id": user.get("workspace_id", "default"),
+        },
+    }
+
+
+class SetPasswordBody(BaseModel):
+    email: EmailStr
+    new_password: str
+    bootstrap_secret: str
+
+
+@api_router.post("/auth/set-emergency-password")
+async def auth_set_emergency_password(body: SetPasswordBody):
+    """Setea/actualiza `password_hash` de un user existente.
+    Requiere conocer EMERGENCY_BOOTSTRAP_SECRET (env var) para evitar abusos.
+    Sólo permite emails listados en INITIAL_ADMIN_EMAILS por seguridad.
+    """
+    secret_env = os.environ.get("EMERGENCY_BOOTSTRAP_SECRET", "")
+    if not secret_env or body.bootstrap_secret != secret_env:
+        raise HTTPException(status_code=403, detail="Bootstrap secret inválido")
+    if len(body.new_password) < 8:
+        raise HTTPException(status_code=400, detail="Password debe tener al menos 8 caracteres")
+    email = (body.email or "").strip().lower()
+    initial_admins = {e.strip().lower() for e in os.environ.get("INITIAL_ADMIN_EMAILS", "").split(",") if e.strip()}
+    if email not in initial_admins:
+        raise HTTPException(status_code=403, detail=f"Email {email} no está en INITIAL_ADMIN_EMAILS")
+    user = await db.users.find_one({"email": email}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User no existe. Inicia sesión con Google primero o crea manualmente.")
+    await db.users.update_one(
+        {"email": email},
+        {"$set": {"password_hash": _hash_password(body.new_password), "password_updated_at": datetime.now(timezone.utc)}},
+    )
+    return {"ok": True, "email": email}
+
+
+
 @api_router.post("/auth/logout")
 async def auth_logout(request: Request, response: FastAPIResponse):
     token = request.cookies.get(SESSION_COOKIE_NAME)

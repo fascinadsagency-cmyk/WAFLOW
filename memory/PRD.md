@@ -482,6 +482,24 @@ Editor colaborativo multi-proyecto de secuencias de mensajes de WhatsApp para ag
 
 **Operación**: borrada sesión zombi previa para forzar relogin limpio.
 
+### Iter 30 (feb 2026) — Bypass de emergencia email+password
+**Motivo**: `auth.emergentagent.com` devuelve HTTP 403 (infraestructura de Emergent, no de WAFLOW). Tras varios intentos sin resolver, montado un sistema de login independiente para que el admin no quede bloqueado.
+
+**Backend (`server.py`)**:
+- `pip install bcrypt==4.1.3`.
+- `POST /api/auth/login` (email + password): busca user, verifica `password_hash` con bcrypt, crea sesión en `db.user_sessions` con `method: "password"` y setea cookie `waflow_session` (mismo formato que Google callback). Coexiste sin interferir.
+- `POST /api/auth/set-emergency-password`: protegido por `EMERGENCY_BOOTSTRAP_SECRET` (env var). Solo permite resetear emails listados en `INITIAL_ADMIN_EMAILS`. Min password 8 chars.
+- Env vars añadidas: `EMERGENCY_BOOTSTRAP_SECRET=<64 hex random>`.
+
+**Frontend (`LoginWall.jsx`)**:
+- Link "¿Google bloqueado? Usar login emergencia" debajo del botón Google.
+- Form embebido (email + password) que llama `/api/auth/login`.
+- En éxito, setea user y refresca → igual UX que Google.
+
+**Operación**: hash bcrypt seteado manualmente para `fascinadsagency@gmail.com` con password `WaflowAdmin2026`. Usuario debe cambiarlo cuanto antes.
+
+**Testing**: smoke curl end-to-end → login devuelve 200 + cookie + `/api/auth/me` con cookie responde admin user.
+
 ## Next Action Items
 - **P1** Extraer `IntakePanel` de App.jsx a `src/panels/IntakePanel.jsx` (~300 líneas dentro de App.jsx = 5150 tras iter-9) siguiendo el patrón de PublicReviewPage.
 - **P1** Continuar refactor App.jsx: `ConnectionsPanel`, `AutopilotPanel+LaunchWizard`, `MessageCard` (411 líneas, complejidad 107), `ProjectWorkspace` (480 líneas). Objetivo: App.jsx <3500 líneas.
