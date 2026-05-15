@@ -91,20 +91,35 @@ export default function LoginWall() {
         : { email: email.trim().toLowerCase(), password, name: name.trim() };
       const r = await fetch(`${API}${endpoint}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "Accept": "application/json" },
         credentials: "include",
+        cache: "no-store",
         body: JSON.stringify(payload),
       });
-      // Leer body 1 sola vez como texto y parsear con seguridad (evita double-read).
-      const raw = await r.text();
+      // Bulletproof body read: clonar ANTES de leer, así si algún interceptor / extensión
+      // ya consumió el body original, todavía tenemos una copia limpia para parsear.
       let data = {};
-      try { data = raw ? JSON.parse(raw) : {}; } catch { data = { detail: raw || `HTTP ${r.status}` }; }
+      let raw = "";
+      try {
+        const clone = (typeof r.clone === "function") ? r.clone() : r;
+        raw = await clone.text();
+      } catch (readErr) {
+        // Si fallar el read del clone, intentar parsear del original como último recurso.
+        try { raw = await r.text(); } catch { raw = ""; }
+      }
+      if (raw) {
+        try { data = JSON.parse(raw); } catch { data = { detail: raw }; }
+      }
       if (!r.ok) {
-        const msg = data.detail || `HTTP ${r.status}`;
+        const msg = data.detail || data.message || `HTTP ${r.status}`;
         throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
       }
+      if (!data || !data.user) {
+        throw new Error("Respuesta inválida del servidor");
+      }
       setUser(data.user);
-      await refresh();
+      // No await refresh() — el setUser ya actualiza la UI, refresh puede correr en background.
+      refresh().catch(() => {});
     } catch (e) {
       setErr(e.message || String(e));
     } finally {
