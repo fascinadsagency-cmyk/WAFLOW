@@ -76,8 +76,13 @@ export default function LoginWall() {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
 
+  const submittingRef = React.useRef(false);
+
   const submit = async (e) => {
     e.preventDefault();
+    // Guard contra double-submit (React StrictMode o doble click humano).
+    if (submittingRef.current) return;
+    submittingRef.current = true;
     setLoading(true); setErr(null);
     try {
       const endpoint = mode === "login" ? "/auth/login" : "/auth/register";
@@ -90,14 +95,21 @@ export default function LoginWall() {
         credentials: "include",
         body: JSON.stringify(payload),
       });
-      const data = await r.json();
-      if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`);
+      // Leer body 1 sola vez como texto y parsear con seguridad (evita double-read).
+      const raw = await r.text();
+      let data = {};
+      try { data = raw ? JSON.parse(raw) : {}; } catch { data = { detail: raw || `HTTP ${r.status}` }; }
+      if (!r.ok) {
+        const msg = data.detail || `HTTP ${r.status}`;
+        throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+      }
       setUser(data.user);
       await refresh();
     } catch (e) {
       setErr(e.message || String(e));
     } finally {
       setLoading(false);
+      submittingRef.current = false;
     }
   };
 
