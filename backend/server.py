@@ -2184,7 +2184,8 @@ class SetPasswordBody(BaseModel):
 async def auth_set_emergency_password(body: SetPasswordBody):
     """Setea/actualiza `password_hash` de un user existente.
     Requiere conocer EMERGENCY_BOOTSTRAP_SECRET (env var) para evitar abusos.
-    Sólo permite emails listados en INITIAL_ADMIN_EMAILS por seguridad.
+    El secret (256-bit) es la única autorización — funciona aunque INITIAL_ADMIN_EMAILS
+    no esté seteado (útil para bootstrapping inicial de producción).
     """
     secret_env = os.environ.get("EMERGENCY_BOOTSTRAP_SECRET", "")
     if not secret_env or body.bootstrap_secret != secret_env:
@@ -2192,17 +2193,35 @@ async def auth_set_emergency_password(body: SetPasswordBody):
     if len(body.new_password) < 8:
         raise HTTPException(status_code=400, detail="Password debe tener al menos 8 caracteres")
     email = (body.email or "").strip().lower()
-    initial_admins = {e.strip().lower() for e in os.environ.get("INITIAL_ADMIN_EMAILS", "").split(",") if e.strip()}
-    if email not in initial_admins:
-        raise HTTPException(status_code=403, detail=f"Email {email} no está en INITIAL_ADMIN_EMAILS")
+    # Si INITIAL_ADMIN_EMAILS está seteado, restringimos a ese set (defensa en profundidad).
+    # Si NO está seteado (caso producción recién deployada), el secret 256-bit es suficiente.
+    initial_admins_raw = os.environ.get("INITIAL_ADMIN_EMAILS", "").strip()
+    if initial_admins_raw:
+        initial_admins = {e.strip().lower() for e in initial_admins_raw.split(",") if e.strip()}
+        if email not in initial_admins:
+            raise HTTPException(status_code=403, detail=f"Email {email} no está en INITIAL_ADMIN_EMAILS")
     user = await db.users.find_one({"email": email}, {"_id": 0})
     if not user:
-        raise HTTPException(status_code=404, detail="User no existe. Inicia sesión con Google primero o crea manualmente.")
+        # Crear user si no existe (bootstrap inicial). Auto-promote a admin.
+        from uuid import uuid4
+        new_user = {
+            "user_id": f"user_{uuid4().hex[:12]}",
+            "email": email,
+            "name": email.split("@")[0],
+            "role": "admin",
+            "workspace_id": "default",
+            "password_hash": _hash_password(body.new_password),
+            "password_updated_at": datetime.now(timezone.utc),
+            "created_at": datetime.now(timezone.utc),
+            "avatar_url": None,
+        }
+        await db.users.insert_one(new_user)
+        return {"ok": True, "email": email, "created": True}
     await db.users.update_one(
         {"email": email},
         {"$set": {"password_hash": _hash_password(body.new_password), "password_updated_at": datetime.now(timezone.utc)}},
     )
-    return {"ok": True, "email": email}
+    return {"ok": True, "email": email, "created": False}
 
 
 
