@@ -20,6 +20,8 @@ import {
   extractVarsUsed,
   stripEmojis,
   hasEmojis,
+  countEmojis,
+  startsWithEmoji,
   computeSkipCondition,
   parseDayOffset,
   RUNTIME_VARS,
@@ -3920,8 +3922,24 @@ function CheckerPanel({ flows, vars, edits, creatives, templatesByMsg, variantsB
         const undef = used.filter(n => !vars.find(v => v.name === n) && !RUNTIME_VARS.has(n));
         if (undef.length > 0) issues.push({ type: "error", flowKey: f.key, msgKey, label: `${f.label} · ${m.id || i}`, text: `Variables sin definir: ${undef.join(", ")}` });
 
-        // 2. Body > 1024
-        if (copy && copy.length > 1024) issues.push({ type: "error", flowKey: f.key, msgKey, label: `${f.label} · ${m.id || i}`, text: `Copy supera 1024 chars (${copy.length}) · límite Meta para templates` });
+        // 2. Body > 1024 chars (límite oficial Meta para Body de plantilla)
+        if (copy && copy.length > 1024) issues.push({ type: "error", flowKey: f.key, msgKey, label: `${f.label} · ${m.id || i}`, text: `Body supera 1024 chars (${copy.length}) · Meta rechazará la plantilla` });
+
+        // 2b. (Meta) Body NO puede empezar con emoji
+        if (isMetaFlow && copy && startsWithEmoji(copy)) {
+          issues.push({ type: "error", flowKey: f.key, msgKey, label: `${f.label} · ${m.id || i}`, text: "El Body empieza con emoji · Meta rechazará la plantilla (no se permite emoji al inicio)" });
+        }
+
+        // 2c. (Meta) Máximo 10 emojis en el Body
+        if (isMetaFlow && copy) {
+          const n = countEmojis(copy);
+          if (n > 10) issues.push({ type: "error", flowKey: f.key, msgKey, label: `${f.label} · ${m.id || i}`, text: `Body tiene ${n} emojis · Meta permite máximo 10 por plantilla` });
+        }
+
+        // 2d. (Meta) Header de texto > 60 chars
+        if (isMetaFlow && tpl?.header && tpl.headerType === "TEXT" && tpl.header.length > 60) {
+          issues.push({ type: "error", flowKey: f.key, msgKey, label: `${f.label} · ${m.id || i}`, text: `Header de texto supera 60 chars (${tpl.header.length}) · Meta rechazará la plantilla` });
+        }
 
         // 3. Botones sin tracking
         if (m.botones && m.botones.includes("Link:") && !m.botones.includes("user_id")) issues.push({ type: "warning", flowKey: f.key, msgKey, label: `${f.label} · ${m.id || i}`, text: "Botón con link pero sin user_id (tracking incompleto)" });
@@ -3940,9 +3958,17 @@ function CheckerPanel({ flows, vars, edits, creatives, templatesByMsg, variantsB
           if (sum >= 100) issues.push({ type: "warning", flowKey: f.key, msgKey, label: `${f.label} · ${m.id || i}`, text: `A/B: suma de tráfico = ${sum}% · quedaría 0% para la variante A (principal)` });
         }
 
-        // 7. Emojis en botones de flujos Meta (Meta no admite emojis en buttons → rechazará la plantilla)
-        if (isMetaFlow && m.botones && hasEmojis(m.botones)) {
-          issues.push({ type: "error", flowKey: f.key, msgKey, label: `${f.label} · ${m.id || i}`, text: "Botones contienen emojis · Meta rechazará la plantilla (los botones NO admiten emojis, aunque el body sí)." });
+        // 7. (Meta) Botones — NO emojis + máximo 20 chars por botón
+        if (isMetaFlow && m.botones && !m.botones.startsWith("N/A")) {
+          if (hasEmojis(m.botones)) {
+            issues.push({ type: "error", flowKey: f.key, msgKey, label: `${f.label} · ${m.id || i}`, text: "Botones contienen emojis · Meta rechazará la plantilla (los botones NO admiten emojis)" });
+          }
+          // Cada botón individual <= 20 chars
+          const btns = m.botones.split(/[\n;]/).map(s => s.replace(/^\[BOTÓN\]\s*/, "").trim()).filter(Boolean);
+          const tooLong = btns.filter(b => b.length > 20);
+          if (tooLong.length > 0) {
+            issues.push({ type: "error", flowKey: f.key, msgKey, label: `${f.label} · ${m.id || i}`, text: `Botón(es) superan 20 chars: ${tooLong.map(b => `"${b}" (${b.length})`).join(", ")} · Meta rechazará la plantilla` });
+          }
         }
 
         // 8. Linter de copies hardcoded — detectar nombres/marcas literales

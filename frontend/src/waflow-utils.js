@@ -109,6 +109,23 @@ export function hasEmojis(text) {
   return EMOJI_RE.test(text);
 }
 
+// Cuenta emojis en un texto (importante: Meta limita a 10 emojis por plantilla)
+export function countEmojis(text) {
+  if (!text) return 0;
+  const matches = text.match(EMOJI_RE);
+  return matches ? matches.length : 0;
+}
+
+// Detecta si el texto empieza con un emoji (Meta no admite emoji al inicio del Body)
+export function startsWithEmoji(text) {
+  if (!text) return false;
+  // Trim de espacios/saltos al inicio antes de checkear
+  const trimmed = text.replace(/^[\s\n\r]+/, "");
+  if (!trimmed) return false;
+  const reStart = new RegExp("^" + EMOJI_RE.source.slice(1, -1), "u");
+  return reStart.test(trimmed);
+}
+
 export function parseDayOffset(dia) {
   if (!dia) return null;
   const s = String(dia).trim().toUpperCase();

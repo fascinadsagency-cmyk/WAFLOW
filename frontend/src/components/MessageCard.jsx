@@ -7,6 +7,7 @@ import {
 import { CopyButton, Field } from "./ui-primitives";
 import {
   replaceVars, extractVarsUsed, stripEmojis, hasEmojis,
+  countEmojis, startsWithEmoji,
   computeSkipCondition, RUNTIME_VARS,
 } from "../waflow-utils";
 
@@ -604,9 +605,19 @@ export default function MessageCard({
               ) : (
                 <div className="bg-white border border-stone-200 rounded-md p-3 text-sm text-stone-800 whitespace-pre-wrap leading-relaxed">{rendered}</div>
               )}
-              <div className="mt-1 text-[10px] text-stone-500 flex justify-end gap-3">
+              <div className="mt-1 text-[10px] text-stone-500 flex justify-end gap-3 flex-wrap">
                 <span>{effectiveCopy.length} chars</span>
-                {effectiveCopy.length > 1024 && <span className="text-red-600">⚠️ supera 1024 (límite Meta template body)</span>}
+                {effectiveCopy.length > 1024 && <span className="text-red-600 font-semibold">⚠️ supera 1024 (límite Meta Body)</span>}
+                {isMetaFlow && (() => {
+                  const n = countEmojis(effectiveCopy);
+                  if (n === 0) return null;
+                  return <span className={n > 10 ? "text-red-600 font-semibold" : "text-stone-600"}>
+                    {n} emoji{n !== 1 ? "s" : ""} {n > 10 && "· máx 10 Meta"}
+                  </span>;
+                })()}
+                {isMetaFlow && startsWithEmoji(effectiveCopy) && (
+                  <span className="text-red-600 font-semibold">⚠️ Body NO puede empezar con emoji</span>
+                )}
               </div>
             </div>
           )}
@@ -743,12 +754,24 @@ export default function MessageCard({
                 <CopyButton text={buttonsRendered} />
               </div>
               <div className="bg-white border border-stone-200 rounded-md p-3 text-xs text-stone-700 whitespace-pre-wrap font-mono leading-relaxed">{buttonsRendered}</div>
-              {isMetaFlow && hasEmojis(msg.botones) && (
-                <div className="mt-1 text-[10.5px] text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1 flex items-center justify-between gap-2"
-                  data-testid={`buttons-emoji-warning-${flowKey}-${msg.id || index}`}>
-                  <span>⚠ Los botones contienen emojis y es un flujo Meta. Los botones NO admiten emojis — Meta rechazará la plantilla.</span>
-                </div>
-              )}
+              {isMetaFlow && (() => {
+                const warnings = [];
+                if (hasEmojis(msg.botones)) {
+                  warnings.push("⚠ Botones contienen emojis · Meta NO los admite en botones");
+                }
+                const btns = msg.botones.split(/[\n;]/).map(s => s.replace(/^\[BOTÓN\]\s*/, "").trim()).filter(Boolean);
+                const tooLong = btns.filter(b => b.length > 20);
+                if (tooLong.length > 0) {
+                  warnings.push(`⚠ ${tooLong.length} botón(es) >20 chars: ${tooLong.map(b => `"${b}" (${b.length})`).join(", ")}`);
+                }
+                if (warnings.length === 0) return null;
+                return (
+                  <div className="mt-1 text-[10.5px] text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1 space-y-0.5"
+                    data-testid={`buttons-warning-${flowKey}-${msg.id || index}`}>
+                    {warnings.map((w, i) => <div key={i}>{w}</div>)}
+                  </div>
+                );
+              })()}
             </div>
           )}
 
