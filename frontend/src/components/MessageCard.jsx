@@ -569,13 +569,8 @@ export default function MessageCard({
               {editing ? (
                 <div>
                   <textarea ref={textareaRef} value={effectiveCopy}
-                    onChange={e => onEditCopy(isMetaFlow ? stripEmojis(e.target.value) : e.target.value)}
+                    onChange={e => onEditCopy(e.target.value)}
                     className="w-full min-h-[160px] p-3 text-sm font-mono bg-white border border-stone-300 rounded-md focus:outline-none focus:border-stone-900" />
-                  {isMetaFlow && (
-                    <div className="text-[10.5px] text-amber-700 mt-1 flex items-center gap-1">
-                      ⚠ No se permiten emojis en mensajes Meta — se eliminan automáticamente al escribir.
-                    </div>
-                  )}
                   <div className="flex items-center gap-2 mt-2 flex-wrap">
                     <button onClick={() => setShowVarPicker(v => !v)}
                       data-testid={`toggle-var-picker-${flowKey}-${msg.id || index}`}
@@ -608,17 +603,6 @@ export default function MessageCard({
                 </div>
               ) : (
                 <div className="bg-white border border-stone-200 rounded-md p-3 text-sm text-stone-800 whitespace-pre-wrap leading-relaxed">{rendered}</div>
-              )}
-              {isMetaFlow && hasEmojis(effectiveCopy) && (
-                <div className="mt-1 text-[10.5px] text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1 flex items-center justify-between gap-2"
-                  data-testid={`emoji-warning-${flowKey}-${msg.id || index}`}>
-                  <span>⚠ Este mensaje contiene emojis y es de un flujo Meta. Meta puede rechazar la plantilla.</span>
-                  <button onClick={() => onEditCopy(stripEmojis(effectiveCopy))}
-                    data-testid={`strip-emojis-${flowKey}-${msg.id || index}`}
-                    className="text-[11px] font-semibold bg-amber-600 text-white px-2 py-0.5 rounded hover:bg-amber-700">
-                    Limpiar emojis
-                  </button>
-                </div>
               )}
               <div className="mt-1 text-[10px] text-stone-500 flex justify-end gap-3">
                 <span>{effectiveCopy.length} chars</span>
@@ -759,6 +743,12 @@ export default function MessageCard({
                 <CopyButton text={buttonsRendered} />
               </div>
               <div className="bg-white border border-stone-200 rounded-md p-3 text-xs text-stone-700 whitespace-pre-wrap font-mono leading-relaxed">{buttonsRendered}</div>
+              {isMetaFlow && hasEmojis(msg.botones) && (
+                <div className="mt-1 text-[10.5px] text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1 flex items-center justify-between gap-2"
+                  data-testid={`buttons-emoji-warning-${flowKey}-${msg.id || index}`}>
+                  <span>⚠ Los botones contienen emojis y es un flujo Meta. Los botones NO admiten emojis — Meta rechazará la plantilla.</span>
+                </div>
+              )}
             </div>
           )}
 

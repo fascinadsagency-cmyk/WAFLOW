@@ -636,8 +636,8 @@ function NewMessageModal({ flow, defaultPosition, onSave, onClose }) {
               placeholder="Hola {NOMBRE}, mañana a las 19h te espero..."
               className="w-full mt-1 px-2.5 py-2 text-sm border border-stone-200 rounded-md min-h-[120px] focus:outline-none focus:border-stone-900 font-mono" />
           </div>
-          <Field label="Botones (opcional, separados por ; o líneas)" value={draft.botones}
-            onChange={v => setDraft({ ...draft, botones: v })} placeholder="Sí, quiero ir; Recuérdame después" mono full />
+          <Field label="Botones (sin emojis · separados por ; o líneas)" value={draft.botones}
+            onChange={v => setDraft({ ...draft, botones: stripEmojis(v) })} placeholder="Sí, quiero ir; Recuérdame después" mono full />
           <div>
             <label className="text-[11px] font-medium text-stone-600">Posición en el flujo (opcional)</label>
             <input type="number" min="0" max={flow.items.length} value={draft.position ?? ""}
@@ -3940,9 +3940,9 @@ function CheckerPanel({ flows, vars, edits, creatives, templatesByMsg, variantsB
           if (sum >= 100) issues.push({ type: "warning", flowKey: f.key, msgKey, label: `${f.label} · ${m.id || i}`, text: `A/B: suma de tráfico = ${sum}% · quedaría 0% para la variante A (principal)` });
         }
 
-        // 7. Emojis en flujos Meta (Meta puede rechazar la plantilla)
-        if (isMetaFlow && hasEmojis(copy)) {
-          issues.push({ type: "warning", flowKey: f.key, msgKey, label: `${f.label} · ${m.id || i}`, text: "Contiene emojis · Meta puede rechazar la plantilla. Usa el botón 'Limpiar emojis' en el mensaje." });
+        // 7. Emojis en botones de flujos Meta (Meta no admite emojis en buttons → rechazará la plantilla)
+        if (isMetaFlow && m.botones && hasEmojis(m.botones)) {
+          issues.push({ type: "error", flowKey: f.key, msgKey, label: `${f.label} · ${m.id || i}`, text: "Botones contienen emojis · Meta rechazará la plantilla (los botones NO admiten emojis, aunque el body sí)." });
         }
 
         // 8. Linter de copies hardcoded — detectar nombres/marcas literales
