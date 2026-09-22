@@ -54,6 +54,7 @@ PROTECTED_POST_JSON = [
     ("/meta/templates/sync", {"project_id": "p1", "items": []}),
     ("/whatsapp/run-flow-test", {"project_id": "p1", "phone_number_id": "1", "access_token": "x", "to": "1", "items": []}),
     ("/whatsapp/run-flow-test/run_dummy/cancel", {}),
+    ("/review/create", {"project_id": "p1"}),
 ]
 
 PROTECTED_PUT_JSON = [
@@ -92,11 +93,6 @@ def _assert_not_401(method, path, **kwargs):
 
 def test_public_review_get_token():
     _assert_not_401("GET", "/review/faketoken_does_not_exist")
-
-
-def test_public_review_create():
-    # Public per spec — creator does not require auth
-    _assert_not_401("POST", "/review/create", json={"project_id": "p1"})
 
 
 def test_public_review_approve():

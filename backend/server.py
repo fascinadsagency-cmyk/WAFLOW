@@ -5,6 +5,7 @@ import logging
 from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional, Any, Dict
 import uuid
+import secrets
 from datetime import datetime, timezone, timedelta
 import httpx
 import re as _re
@@ -20,7 +21,16 @@ from auth_deps import (
 import pg_client as _pg
 import pg_routes
 
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from slowapi import _rate_limit_exceeded_handler
+
+limiter = Limiter(key_func=get_remote_address)
+
 app = FastAPI(title="WhatsApp Flow Editor API")
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 api_router = APIRouter(prefix="/api")
 
 
@@ -155,7 +165,11 @@ class EventBody(BaseModel):
 
 
 @api_router.post("/events")
-async def post_event(body: EventBody):
+async def post_event(body: EventBody, request: Request):
+    secret_env = os.environ.get("EVENTS_WEBHOOK_SECRET", "")
+    provided = request.headers.get("X-WAFLOW-Secret", "")
+    if not secret_env or not secrets.compare_digest(provided, secret_env):
+        raise HTTPException(status_code=401, detail="Invalid X-WAFLOW-Secret")
     doc = body.model_dump()
     doc["id"] = str(uuid.uuid4())
     if not doc.get("timestamp"):
@@ -171,6 +185,8 @@ async def list_events(
     limit: int = 500,
     user: Dict[str, Any] = Depends(require_user),
 ):
+    if limit > 2000:
+        limit = 2000
     q: Dict[str, Any] = {}
     if project_id:
         q["project_id"] = project_id
@@ -475,7 +491,6 @@ async def review_sign(token: str, body: ReviewSignBody):
 # /review/:token en el frontend, que llama a estos endpoints.
 # ============================================================
 import json as _json
-import secrets
 
 PROJECTS_LIST_KEY = "wa_editor:projects_list"
 
@@ -504,7 +519,7 @@ class ReviewCreateBody(BaseModel):
 
 
 @api_router.post("/review/create")
-async def review_create(body: ReviewCreateBody):
+async def review_create(body: ReviewCreateBody, user: Dict[str, Any] = Depends(require_user)):
     # Buscar token existente
     existing = await db.review_tokens.find_one({"project_id": body.project_id}, {"_id": 0})
     if existing:
@@ -716,10 +731,18 @@ def _pdf_header(project, styles):
     from reportlab.platypus import Paragraph, Spacer
     return [
         Paragraph("WAFLOW · Resumen de revisión", styles["title"]),
-        Paragraph(f"<b>Proyecto:</b> {project.get('name','?')} · <b>Cliente:</b> {project.get('client') or '—'}", styles["meta"]),
+        Paragraph(f"<b>Proyecto:</b> {_pdf_esc(project.get('name','?'))} · <b>Cliente:</b> {_pdf_esc(project.get('client') or '—')}", styles["meta"]),
         Paragraph(f"Generado: {datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M UTC')}", styles["meta"]),
         Spacer(1, 0.4*cm),
     ]
+
+
+def _pdf_esc(text) -> str:
+    """Escapa &, <, >, y comillas para prevenir inyección en Paragraph (RML)."""
+    from xml.sax.saxutils import escape as _xml_escape
+    if text is None:
+        return ""
+    return _xml_escape(str(text), {'"': '&quot;', "'": '&#39;'})
 
 
 def _pdf_stats_table(approval, styles):
@@ -773,18 +796,21 @@ def _pdf_render_message_block(msg_key: str, approval_entry: Dict[str, Any], edit
     label, color = _pdf_status_metadata(approval_entry.get("status"))
     block = [
         Paragraph(
-            f"<font name='Courier-Bold' color='#111827'>{msg_key}</font> · "
+            f"<font name='Courier-Bold' color='#111827'>{_pdf_esc(msg_key)}</font> · "
             f"<font color='{color.hexval()[2:]}'><b>{label}</b></font>",
             styles["body"],
         ),
-        Paragraph(f"<font color='#6B7280' size='9'>Revisado por: {approval_entry.get('by', '—')}</font>", styles["meta"]),
+        Paragraph(f"<font color='#6B7280' size='9'>Revisado por: {_pdf_esc(approval_entry.get('by', '—'))}</font>", styles["meta"]),
     ]
     if edited_copy:
         block.append(Spacer(1, 0.1 * cm))
-        block.append(Paragraph(_pdf_render_vars(edited_copy, vars_list).replace("\n", "<br/>"), styles["body"]))
+        rendered = _pdf_render_vars(edited_copy, vars_list)
+        # Escapar ANTES de reemplazar \n por <br/> para no romper el markup
+        safe = _pdf_esc(rendered).replace("\n", "<br/>")
+        block.append(Paragraph(safe, styles["body"]))
     if approval_entry.get("comment"):
         block.append(Spacer(1, 0.1 * cm))
-        block.append(Paragraph(f"<b>Nota del cliente:</b> {approval_entry['comment']}", styles["note"]))
+        block.append(Paragraph(f"<b>Nota del cliente:</b> {_pdf_esc(approval_entry['comment'])}", styles["note"]))
     block.append(Spacer(1, 0.3 * cm))
     return block
 
@@ -1095,6 +1121,13 @@ async def intake_client_save(token: str, body: IntakeClientSaveBody):
     return {"ok": True, "status": it["status"]}
 
 
+ALLOWED_UPLOAD_CT = {
+    "image/jpeg", "image/png", "image/webp", "image/gif",
+    "video/mp4", "video/quicktime", "application/pdf",
+}
+ALLOWED_UPLOAD_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".mp4", ".mov", ".pdf"}
+
+
 @api_router.post("/intake/{token}/upload")
 async def intake_client_upload(token: str, item_id: str = Form(...), file: UploadFile = File(...)):
     """Cliente sube archivo (GridFS). Límite 10 MB. Queda en status 'pending'."""
@@ -1105,6 +1138,16 @@ async def intake_client_upload(token: str, item_id: str = Form(...), file: Uploa
         raise HTTPException(status_code=404, detail="Item no encontrado")
     if not items[idx].get("requested"):
         raise HTTPException(status_code=403, detail="Este item no fue solicitado")
+    # Validar content_type + extensión (whitelist)
+    ct = (file.content_type or "").lower()
+    if ct not in ALLOWED_UPLOAD_CT:
+        raise HTTPException(status_code=415, detail=f"Content-Type no permitido: {ct}")
+    fname = file.filename or ""
+    ext = ""
+    if "." in fname:
+        ext = "." + fname.rsplit(".", 1)[-1].lower()
+    if ext not in ALLOWED_UPLOAD_EXT:
+        raise HTTPException(status_code=415, detail=f"Extensión no permitida: {ext}")
     # Leer contenido con límite
     contents = await file.read(MAX_UPLOAD_BYTES + 1)
     if len(contents) > MAX_UPLOAD_BYTES:
@@ -1113,7 +1156,8 @@ async def intake_client_upload(token: str, item_id: str = Form(...), file: Uploa
     old_id = items[idx].get("client_file_id")
     if old_id:
         try:
-            await _gridfs_bucket.delete(old_id)
+            from bson import ObjectId as _OID
+            await _gridfs_bucket.delete(_OID(old_id))
         except Exception:
             pass
     # Subir
@@ -1151,7 +1195,9 @@ async def intake_get_file(file_id: str):
     except Exception:
         raise HTTPException(status_code=404, detail="Fichero no encontrado")
     content_type = (stream.metadata or {}).get("content_type") or "application/octet-stream"
-    filename = stream.filename or "file"
+    raw_filename = stream.filename or "file"
+    # Sanear filename: solo [A-Za-z0-9._-]
+    safe_filename = _re.sub(r"[^A-Za-z0-9._-]", "_", raw_filename) or "file"
     async def _iter():
         while True:
             chunk = await stream.readchunk()
@@ -1161,7 +1207,10 @@ async def intake_get_file(file_id: str):
     return StreamingResponse(
         _iter(),
         media_type=content_type,
-        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe_filename}"',
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 
@@ -2028,7 +2077,8 @@ class RegisterBody(BaseModel):
 
 
 @api_router.post("/auth/register")
-async def auth_register(body: RegisterBody, response: FastAPIResponse):
+@limiter.limit("5/minute")
+async def auth_register(request: Request, body: RegisterBody, response: FastAPIResponse):
     """Registro con email+password.
     Política: solo se permite si el email está en INITIAL_ADMIN_EMAILS, en
     db.auth_allowlist, o si NO hay ningún user en la BD (primer admin).
@@ -2129,7 +2179,8 @@ class EmergencyLoginBody(BaseModel):
 
 
 @api_router.post("/auth/login")
-async def auth_login(body: EmergencyLoginBody, response: FastAPIResponse):
+@limiter.limit("5/minute")
+async def auth_login(request: Request, body: EmergencyLoginBody, response: FastAPIResponse):
     """Login con email+password. Requiere que el user EXISTA en db.users y
     tenga `password_hash`. Para inicializar/cambiar el hash usar
     POST /api/auth/set-emergency-password.
@@ -2181,14 +2232,15 @@ class SetPasswordBody(BaseModel):
 
 
 @api_router.post("/auth/set-emergency-password")
-async def auth_set_emergency_password(body: SetPasswordBody):
+@limiter.limit("5/minute")
+async def auth_set_emergency_password(request: Request, body: SetPasswordBody):
     """Setea/actualiza `password_hash` de un user existente.
     Requiere conocer EMERGENCY_BOOTSTRAP_SECRET (env var) para evitar abusos.
     El secret (256-bit) es la única autorización — funciona aunque INITIAL_ADMIN_EMAILS
     no esté seteado (útil para bootstrapping inicial de producción).
     """
     secret_env = os.environ.get("EMERGENCY_BOOTSTRAP_SECRET", "")
-    if not secret_env or body.bootstrap_secret != secret_env:
+    if not secret_env or not secrets.compare_digest(body.bootstrap_secret or "", secret_env):
         raise HTTPException(status_code=403, detail="Bootstrap secret inválido")
     if len(body.new_password) < 8:
         raise HTTPException(status_code=400, detail="Password debe tener al menos 8 caracteres")
@@ -2298,10 +2350,17 @@ async def root():
 app.include_router(api_router)
 app.include_router(pg_routes.router)
 
+_cors_raw = os.environ.get('CORS_ORIGINS', '').strip()
+if not _cors_raw:
+    raise RuntimeError("CORS_ORIGINS debe definirse")
+_cors_origins = [o.strip() for o in _cors_raw.split(',') if o.strip()]
+if not _cors_origins:
+    raise RuntimeError("CORS_ORIGINS debe definirse")
+
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_origins=_cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
