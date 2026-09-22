@@ -121,7 +121,16 @@ export default function LoginWall() {
       // No await refresh() — el setUser ya actualiza la UI, refresh puede correr en background.
       refresh().catch(() => {});
     } catch (e) {
-      setErr(e.message || String(e));
+      // Traducir errores de red comunes a español para debugging
+      let msg = e?.message || String(e);
+      if (msg === "Failed to fetch" || msg.includes("NetworkError")) {
+        msg = "Sin conexión al servidor. Puede ser bloqueado por una extensión, adblock, o red. Intenta en incógnito con extensiones desactivadas.";
+      } else if (msg.includes("body stream already read")) {
+        msg = "Error interno de fetch (probable caché del navegador). Prueba Ctrl+Shift+R o ventana incógnito.";
+      } else if (msg === "TypeError: fetch failed" || msg.includes("aborted")) {
+        msg = "Petición interrumpida. Reintenta o revisa tu conexión.";
+      }
+      setErr(msg);
     } finally {
       setLoading(false);
       submittingRef.current = false;
