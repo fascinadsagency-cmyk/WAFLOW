@@ -156,13 +156,17 @@ async function saveToStorage(key, value, shared = SHARED) {
   } catch (e) { console.warn("save fail", key, e); }
   return false;
 }
+export const LOAD_ERROR = Symbol("waflow_load_error");
 async function loadFromStorage(key, shared = SHARED) {
   try {
     if (window.storage && window.storage.get) {
       const r = await window.storage.get(key, shared);
       if (r && r.value) return JSON.parse(r.value);
     }
-  } catch (e) { /* ok */ }
+  } catch (e) {
+    console.warn("load fail", key, e);
+    return LOAD_ERROR;
+  }
   return null;
 }
 async function deleteFromStorage(key, shared = SHARED) {
@@ -4927,6 +4931,7 @@ function ProjectWorkspace({ project, onBack, me, onUpdateProject }) {
   const [sidebarTab, setSidebarTab] = useState("flows");
   const [previewMsg, setPreviewMsg] = useState(null);
   const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState(false);
   const [saveStatus, setSaveStatus] = useState("synced");
   const [scrollToMsg, setScrollToMsg] = useState(null);
 
@@ -4944,6 +4949,18 @@ function ProjectWorkspace({ project, onBack, me, onUpdateProject }) {
       const stpl = await loadFromStorage(pk(pid, "templates"));
       const sss = await loadFromStorage(pk(pid, "snapshots"));
       const sh = await loadFromStorage(pk(pid, "history"));
+      const sncfg = await loadFromStorage(pk(pid, "notify_config"));
+      const scust = await loadFromStorage(pk(pid, "custom_msgs"));
+      const scap = await loadFromStorage(pk(pid, "captacion"));
+      const sbp = await loadFromStorage(pk(pid, "botPrompts"));
+
+      // Si CUALQUIERA falló (LOAD_ERROR), abortar antes de tocar state para no
+      // dejar el proyecto vacío y que autosave sobreescriba el servidor.
+      const allResults = [sv, se, sc, scn, sp, scmm, svar, sapp, stpl, sss, sh, sncfg, scust, scap, sbp];
+      if (allResults.some(r => r === LOAD_ERROR)) {
+        setLoadError(true);
+        return;
+      }
 
       const base = getDefaultVarsForStrategy(project.strategy);
       if (sv && Array.isArray(sv)) {
@@ -4957,14 +4974,10 @@ function ProjectWorkspace({ project, onBack, me, onUpdateProject }) {
       if (se) setEdits(se);
       if (sc) setCreatives(sc);
       if (scn) setConnections(scn);
-      const sncfg = await loadFromStorage(pk(pid, "notify_config"));
       if (sncfg) setNotifyConfig(sncfg);
-      const scust = await loadFromStorage(pk(pid, "custom_msgs"));
       if (scust) setCustomMsgs(scust);
-      const scap = await loadFromStorage(pk(pid, "captacion"));
       if (scap) setCaptacionConfig(scap);
       if (sp) setAIPrompt(sp);
-      const sbp = await loadFromStorage(pk(pid, "botPrompts"));
       if (sbp && typeof sbp === "object") setBotPrompts({ ...buildDefaultBotPrompts(), ...sbp });
       if (scmm) setCommentsByMsg(scmm);
       if (svar) setVariantsByMsg(svar);
@@ -5264,6 +5277,17 @@ function ProjectWorkspace({ project, onBack, me, onUpdateProject }) {
 
   const goToMessage = (flowKey, msgKey) => { setActiveFlow(flowKey); setActiveTab("flows"); setScrollToMsg(msgKey); };
 
+  if (loadError) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-stone-50 px-6">
+        <div className="text-center">
+          <div className="text-sm text-stone-700 mb-4">No se pudo cargar el proyecto. Comprueba la conexión.</div>
+          <button onClick={() => window.location.reload()} className="px-4 py-2 bg-stone-900 text-white text-sm rounded-md hover:bg-stone-700">Reintentar</button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-stone-50" style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
       <header className="bg-white border-b border-stone-200 sticky top-0 z-20">
@@ -5446,12 +5470,17 @@ function MainApp() {
   const [showProjectDialog, setShowProjectDialog] = useState(null); // { isNew, project }
   const [showTeamDialog, setShowTeamDialog] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState(false);
   const me = user?.name || "";
 
   useEffect(() => {
     (async () => {
       const ps = await loadFromStorage(K_PROJECTS);
       const act = await loadFromStorage(K_ACTIVE);
+      if (ps === LOAD_ERROR || act === LOAD_ERROR) {
+        setLoadError(true);
+        return;
+      }
       if (ps) setProjects(ps);
       if (act) setActiveId(act);
       setLoaded(true);
@@ -5501,6 +5530,16 @@ function MainApp() {
     if (activeId === p.id) setActiveId(null);
   };
 
+  if (loadError) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-stone-50 px-6">
+        <div className="text-center">
+          <div className="text-sm text-stone-700 mb-4">No se pudieron cargar los proyectos. Comprueba la conexión.</div>
+          <button onClick={() => window.location.reload()} className="px-4 py-2 bg-stone-900 text-white text-sm rounded-md hover:bg-stone-700">Reintentar</button>
+        </div>
+      </div>
+    );
+  }
   if (!loaded) return <div className="min-h-screen flex items-center justify-center bg-stone-50 text-stone-500 text-sm">Cargando...</div>;
 
   return (
